@@ -16,6 +16,7 @@
     <Using Include="Xunit" />
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Services\Payment\Payments.Payment.Application\Payments.Payment.Application.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payment\Payments.Payment.Domain\Payments.Payment.Domain.csproj" />
   </ItemGroup>
 </Project>

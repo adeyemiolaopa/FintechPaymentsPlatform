@@ -3,12 +3,14 @@ using System.Diagnostics.Metrics;
 using System.Text.Json;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Npgsql;
 using Payments.BuildingBlocks.Application.Abstractions;
 using Payments.BuildingBlocks.Application.Exceptions;
 using Payments.BuildingBlocks.Messaging.Events;
 using Payments.Payment.Application.Payments;
 using Payments.Payment.Domain.Payments;
+using Payments.Payment.Infrastructure;
 using Payments.Payment.Infrastructure.Persistence;
 using DomainException = Payments.BuildingBlocks.Domain.Primitives.DomainException;
 
@@ -24,6 +26,11 @@ public sealed class PaymentService : IPaymentService
     private static readonly Counter<long> PaymentsRejected = Meter.CreateCounter<long>("payments_rejected_total");
     private static readonly Counter<long> PaymentsFailed = Meter.CreateCounter<long>("payments_failed_total");
     private static readonly Counter<long> PaymentsCancelled = Meter.CreateCounter<long>("payments_cancelled_total");
+    private static readonly Counter<long> IdempotencyRequests = Meter.CreateCounter<long>("idempotency_requests_total");
+    private static readonly Counter<long> IdempotencyNew = Meter.CreateCounter<long>("idempotency_new_total");
+    private static readonly Counter<long> IdempotencyReplayed = Meter.CreateCounter<long>("idempotency_replayed_total");
+    private static readonly Counter<long> IdempotencyConflicts = Meter.CreateCounter<long>("idempotency_conflicts_total");
+    private static readonly Counter<long> IdempotencyProcessing = Meter.CreateCounter<long>("idempotency_processing_total");
     private static readonly Counter<long> RecoveryAttempts = Meter.CreateCounter<long>("payment_recovery_attempt_total");
     private static readonly Counter<long> RecoverySuccesses = Meter.CreateCounter<long>("payment_recovery_success_total");
     private static readonly Counter<long> RecoveryFailures = Meter.CreateCounter<long>("payment_recovery_failure_total");
@@ -36,8 +43,9 @@ public sealed class PaymentService : IPaymentService
     private readonly ILedgerServiceClient _ledgerClient;
     private readonly IValidator<CreatePaymentRequest> _createValidator;
     private readonly IValidator<PaymentSearchRequest> _searchValidator;
+    private readonly PaymentIdempotencyOptions _idempotencyOptions;
 
-    public PaymentService(PaymentDbContext dbContext, IClock clock, ICurrentUser currentUser, IRequestContext requestContext, IAccountServiceClient accountClient, ILedgerServiceClient ledgerClient, IValidator<CreatePaymentRequest> createValidator, IValidator<PaymentSearchRequest> searchValidator)
+    public PaymentService(PaymentDbContext dbContext, IClock clock, ICurrentUser currentUser, IRequestContext requestContext, IAccountServiceClient accountClient, ILedgerServiceClient ledgerClient, IValidator<CreatePaymentRequest> createValidator, IValidator<PaymentSearchRequest> searchValidator, IOptions<PaymentIdempotencyOptions>? idempotencyOptions = null)
     {
         _dbContext = dbContext;
         _clock = clock;
@@ -47,27 +55,30 @@ public sealed class PaymentService : IPaymentService
         _ledgerClient = ledgerClient;
         _createValidator = createValidator;
         _searchValidator = searchValidator;
+        _idempotencyOptions = idempotencyOptions?.Value ?? new PaymentIdempotencyOptions();
     }
 
-    public async Task<PaymentResponse> CreateAsync(CreatePaymentRequest request, CancellationToken cancellationToken = default)
+    public async Task<PaymentCreationResult> CreateAsync(CreatePaymentRequest request, string idempotencyKey, CancellationToken cancellationToken = default)
     {
         await _createValidator.ValidateAndThrowAsync(request, cancellationToken).ConfigureAwait(false);
+        var normalizedKey = IdempotencyKeyRules.Normalize(idempotencyKey);
         var customerId = RequireCustomerId();
-        var now = _clock.UtcNow;
-        var type = Enum.Parse<PaymentType>(request.Type, true);
-        var currency = Currency.FromCode(request.Currency);
-        var destination = CreateDestination(type, request.Destination);
-        var reference = await GenerateReferenceAsync(now, cancellationToken).ConfigureAwait(false);
-        var payment = Domain.Payments.Payment.Create(customerId, request.SourceAccountId, type, Money.Of(request.Amount, currency), destination, reference, request.Description, reference, now, _requestContext.CorrelationId, ResolveActorType(false), ActorId(false));
-        _dbContext.Payments.Add(payment);
-        AddLatestTransition(payment);
-        AddAudit(payment, "PaymentCreated", now);
-        AddLifecycleOutbox(payment, now);
-        await SaveAsync(cancellationToken).ConfigureAwait(false);
-        PaymentsInitiated.Add(1, new KeyValuePair<string, object?>("payment_type", payment.PaymentType.ToString()), new KeyValuePair<string, object?>("currency", payment.Currency.Code));
+        var requestHash = PaymentRequestHasher.ComputeHash(request);
+        IdempotencyRequests.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment));
 
-        await ResumePaymentAsync(payment.Id, ResolveActorType(false), ActorId(false), cancellationToken).ConfigureAwait(false);
-        return Map(await LoadPaymentAsync(payment.Id, true, cancellationToken).ConfigureAwait(false));
+        var claim = await TryClaimAndCreatePaymentAsync(customerId, normalizedKey, requestHash, request, cancellationToken).ConfigureAwait(false);
+        if (!claim.Created)
+        {
+            return await ResolveExistingIdempotencyAsync(customerId, normalizedKey, requestHash, cancellationToken).ConfigureAwait(false);
+        }
+
+        IdempotencyNew.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment));
+        PaymentsInitiated.Add(1);
+        await ResumePaymentAsync(claim.PaymentId, ResolveActorType(false), ActorId(false), cancellationToken).ConfigureAwait(false);
+        var payment = await LoadPaymentAsync(claim.PaymentId, true, cancellationToken).ConfigureAwait(false);
+        var response = Map(payment);
+        await CompleteIdempotencyAsync(claim.IdempotencyRecordId, response, 201, cancellationToken).ConfigureAwait(false);
+        return new PaymentCreationResult(response, false, 201);
     }
 
     public async Task<PaymentDetailResponse> GetAsync(Guid paymentId, CancellationToken cancellationToken = default)
@@ -174,6 +185,111 @@ public sealed class PaymentService : IPaymentService
         return processed;
     }
 
+    private async Task<IdempotencyClaimResult> TryClaimAndCreatePaymentAsync(Guid customerId, string idempotencyKey, string requestHash, CreatePaymentRequest request, CancellationToken cancellationToken)
+    {
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                var now = _clock.UtcNow;
+                var type = Enum.Parse<PaymentType>(request.Type, true);
+                var currency = Currency.FromCode(request.Currency);
+                var destination = CreateDestination(type, request.Destination);
+                var reference = await GenerateReferenceAsync(now, cancellationToken).ConfigureAwait(false);
+                var expiresAtUtc = now.AddDays(Math.Clamp(_idempotencyOptions.RetentionDays, 1, 90));
+                var idempotency = IdempotencyRecord.Create(customerId, PaymentOperationTypes.CreatePayment, idempotencyKey, requestHash, now, expiresAtUtc);
+                var payment = Domain.Payments.Payment.Create(customerId, request.SourceAccountId, type, Money.Of(request.Amount, currency), destination, reference, request.Description, reference, now, _requestContext.CorrelationId, ResolveActorType(false), ActorId(false));
+
+                _dbContext.IdempotencyRecords.Add(idempotency);
+                _dbContext.Payments.Add(payment);
+                AddLatestTransition(payment);
+                AddAudit(payment, "PaymentCreated", now);
+                AddAudit(payment, "PaymentInitiationAccepted", now);
+                AddLifecycleOutbox(payment, now);
+                idempotency.AttachResource("Payment", payment.Id, now);
+
+                await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+                _dbContext.ChangeTracker.Clear();
+                return new IdempotencyClaimResult(payment.Id, idempotency.Id, true);
+            }
+            catch (DbUpdateException exception) when (IsUniqueViolation(exception))
+            {
+                await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
+                _dbContext.ChangeTracker.Clear();
+                return new IdempotencyClaimResult(Guid.Empty, Guid.Empty, false);
+            }
+        }).ConfigureAwait(false);
+    }
+
+    private async Task<PaymentCreationResult> ResolveExistingIdempotencyAsync(Guid customerId, string idempotencyKey, string requestHash, CancellationToken cancellationToken)
+    {
+        var record = await _dbContext.IdempotencyRecords.AsNoTracking()
+            .SingleAsync(item => item.CustomerId == customerId && item.OperationType == PaymentOperationTypes.CreatePayment && item.IdempotencyKey == idempotencyKey, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!string.Equals(record.RequestHash, requestHash, StringComparison.Ordinal))
+        {
+            IdempotencyConflicts.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment));
+            if (record.ResourceId is { } conflictPaymentId)
+            {
+                await AddIdempotencyAuditIfPaymentExistsAsync(conflictPaymentId, "IdempotencyConflictDetected", "Same key was reused with a different request hash.", cancellationToken).ConfigureAwait(false);
+            }
+
+            throw new IdempotencyKeyConflictException();
+        }
+
+        if (record.ResourceId is null)
+        {
+            IdempotencyProcessing.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment));
+            throw new ConflictException("The idempotent payment request is still being initialized. Retry shortly with the same key.");
+        }
+
+        var payment = await LoadPaymentAsync(record.ResourceId.Value, false, cancellationToken).ConfigureAwait(false);
+        var response = Map(payment);
+        if (record.IsProcessing)
+        {
+            if (IsTerminal(payment.Status))
+            {
+                await CompleteIdempotencyAsync(record.Id, response, 201, cancellationToken).ConfigureAwait(false);
+                IdempotencyReplayed.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment), new KeyValuePair<string, object?>("result", "completed_after_recovery"));
+                await AddIdempotencyAuditIfPaymentExistsAsync(payment.Id, "DuplicateRequestReplayed", "Completed idempotency record was reconstructed from the existing payment.", cancellationToken).ConfigureAwait(false);
+                return new PaymentCreationResult(response, true, 201);
+            }
+
+            IdempotencyProcessing.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment));
+            await AddIdempotencyAuditIfPaymentExistsAsync(payment.Id, "DuplicateRequestReplayed", "Duplicate request observed while original initiation is processing.", cancellationToken).ConfigureAwait(false);
+            return new PaymentCreationResult(response, true, 202);
+        }
+
+        IdempotencyReplayed.Add(1, new KeyValuePair<string, object?>("operation", PaymentOperationTypes.CreatePayment));
+        await AddIdempotencyAuditIfPaymentExistsAsync(payment.Id, "DuplicateRequestReplayed", "Duplicate request returned the existing payment resource.", cancellationToken).ConfigureAwait(false);
+        return new PaymentCreationResult(response, true, record.ResponseStatusCode ?? 201);
+    }
+
+    private async Task CompleteIdempotencyAsync(Guid idempotencyRecordId, PaymentResponse response, int statusCode, CancellationToken cancellationToken)
+    {
+        var record = await _dbContext.IdempotencyRecords.SingleAsync(item => item.Id == idempotencyRecordId, cancellationToken).ConfigureAwait(false);
+        if (record.IsCompleted) return;
+        record.Complete(statusCode, JsonSerializer.Serialize(response, SerializerOptions), _clock.UtcNow);
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task AddIdempotencyAuditIfPaymentExistsAsync(Guid paymentId, string eventType, string reason, CancellationToken cancellationToken)
+    {
+        var payment = await _dbContext.Payments.SingleOrDefaultAsync(item => item.Id == paymentId, cancellationToken).ConfigureAwait(false);
+        if (payment is null) return;
+        AddAudit(payment, eventType, _clock.UtcNow, reason);
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsTerminal(PaymentStatus status) => status is PaymentStatus.Completed or PaymentStatus.Failed or PaymentStatus.Rejected or PaymentStatus.Cancelled;
+
+    private static bool IsUniqueViolation(DbUpdateException exception) => exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
+
+    private sealed record IdempotencyClaimResult(Guid PaymentId, Guid IdempotencyRecordId, bool Created);
     private async Task ResumePaymentAsync(Guid paymentId, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
     {
         var keepGoing = true;

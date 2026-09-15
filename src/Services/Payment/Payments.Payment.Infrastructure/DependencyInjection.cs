@@ -15,6 +15,15 @@ public sealed class PaymentDatabaseOptions
     public string ConnectionString { get; init; } = "Host=127.0.0.1;Port=15432;Database=payments_payment;Username=payments;Password=change-me-local-only";
 }
 
+
+public sealed class PaymentIdempotencyOptions
+{
+    public const string SectionName = "PaymentIdempotency";
+    public int RetentionDays { get; init; } = 7;
+    public bool CleanupEnabled { get; init; } = true;
+    public int CleanupIntervalMinutes { get; init; } = 60;
+    public int CleanupBatchSize { get; init; } = 100;
+}
 public sealed class DownstreamServiceOptions
 {
     public const string SectionName = "DownstreamServices";
@@ -32,6 +41,7 @@ public static class DependencyInjection
         services.AddOptions<KafkaOptions>().Bind(configuration.GetSection(KafkaOptions.SectionName));
         services.AddOptions<PaymentOutboxOptions>().Bind(configuration.GetSection(PaymentOutboxOptions.SectionName));
         services.AddOptions<PaymentRecoveryOptions>().Bind(configuration.GetSection(PaymentRecoveryOptions.SectionName));
+        services.AddOptions<PaymentIdempotencyOptions>().Bind(configuration.GetSection(PaymentIdempotencyOptions.SectionName));
         var database = configuration.GetSection(PaymentDatabaseOptions.SectionName).Get<PaymentDatabaseOptions>() ?? new PaymentDatabaseOptions();
         var downstream = configuration.GetSection(DownstreamServiceOptions.SectionName).Get<DownstreamServiceOptions>() ?? new DownstreamServiceOptions();
         services.AddDbContext<PaymentDbContext>(options => options.UseNpgsql(database.ConnectionString, npgsql => npgsql.EnableRetryOnFailure(3)));
@@ -41,6 +51,7 @@ public static class DependencyInjection
         services.AddScoped<PaymentReferenceHandler>();
         services.AddHostedService<PaymentOutboxPublisher>();
         services.AddHostedService<PaymentRecoveryWorker>();
+        services.AddHostedService<PaymentIdempotencyCleanupWorker>();
         return services;
     }
 }

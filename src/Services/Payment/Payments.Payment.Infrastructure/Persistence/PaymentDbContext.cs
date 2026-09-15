@@ -16,6 +16,7 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
     public DbSet<CustomerReference> CustomerReferences => Set<CustomerReference>();
     public DbSet<AccountReference> AccountReferences => Set<AccountReference>();
     public DbSet<ProcessedIntegrationEvent> ProcessedIntegrationEvents => Set<ProcessedIntegrationEvent>();
+    public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -115,6 +116,22 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
             builder.HasIndex(reference => reference.LedgerAccountId).IsUnique().HasFilter("\"LedgerAccountId\" IS NOT NULL");
         });
 
+
+        modelBuilder.Entity<IdempotencyRecord>(builder =>
+        {
+            builder.ToTable("payment_idempotency_records");
+            builder.HasKey(record => record.Id);
+            builder.Property(record => record.OperationType).HasMaxLength(80).IsRequired();
+            builder.Property(record => record.IdempotencyKey).HasMaxLength(128).IsRequired();
+            builder.Property(record => record.RequestHash).HasMaxLength(64).IsRequired();
+            builder.Property(record => record.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
+            builder.Property(record => record.ResourceType).HasMaxLength(80);
+            builder.Property(record => record.ResponseBody).HasColumnType("jsonb");
+            builder.HasIndex(record => new { record.CustomerId, record.OperationType, record.IdempotencyKey }).IsUnique();
+            builder.HasIndex(record => new { record.Status, record.UpdatedAtUtc });
+            builder.HasIndex(record => record.ExpiresAtUtc);
+            builder.HasIndex(record => record.ResourceId);
+        });
         modelBuilder.Entity<ProcessedIntegrationEvent>(builder =>
         {
             builder.ToTable("processed_integration_events");

@@ -40,7 +40,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     public async Task Successful_internal_transfer_completes_with_reservation_commit_ledger_post_timeline_and_outbox()
     {
         var service = CreateService();
-        var response = await service.CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 40000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Rent"));
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 40000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Rent"));
 
         response.Status.Should().Be("Completed");
         response.FundsReservationId.Should().NotBeNull();
@@ -64,7 +64,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     {
         _accountClient.AvailableBalance = 10000m;
         var service = CreateService();
-        var response = await service.CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 40000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Too much"));
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 40000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Too much"));
 
         response.Status.Should().Be("Rejected");
         response.ReasonCode.Should().Be(PaymentFailureReasonCode.InsufficientFunds.ToString());
@@ -83,7 +83,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
             await dbContext.SaveChangesAsync();
         }
 
-        var response = await CreateService().CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 1000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), null));
+        var response = await CreatePaymentAsync(CreateService(), new CreatePaymentRequest(_accountA, "InternalTransfer", 1000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), null));
         response.Status.Should().Be("Rejected");
         response.ReasonCode.Should().Be(PaymentFailureReasonCode.SourceAccountFrozen.ToString());
         _accountClient.ReserveCount.Should().Be(0);
@@ -93,7 +93,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     [Fact]
     public async Task Currency_mismatch_rejects_before_reservation()
     {
-        var response = await CreateService().CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 1000m, "USD", new PaymentDestinationRequest(AccountId: _accountB), null));
+        var response = await CreatePaymentAsync(CreateService(), new CreatePaymentRequest(_accountA, "InternalTransfer", 1000m, "USD", new PaymentDestinationRequest(AccountId: _accountB), null));
         response.Status.Should().Be("Rejected");
         response.ReasonCode.Should().Be(PaymentFailureReasonCode.CurrencyMismatch.ToString());
         _accountClient.ReserveCount.Should().Be(0);
@@ -103,7 +103,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     public async Task External_bank_transfer_is_accepted_but_not_marked_completed_without_external_rail_confirmation()
     {
         var service = CreateService();
-        var response = await service.CreateAsync(new CreatePaymentRequest(_accountA, "ExternalBankTransfer", 15000m, "NGN", new PaymentDestinationRequest(BankCode: "058", AccountNumber: "0123456789", AccountName: "Ada Lovelace", CountryCode: "NG"), "External payout"));
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "ExternalBankTransfer", 15000m, "NGN", new PaymentDestinationRequest(BankCode: "058", AccountNumber: "0123456789", AccountName: "Ada Lovelace", CountryCode: "NG"), "External payout"));
 
         response.Status.Should().Be("Processing");
         response.FundsReservationId.Should().NotBeNull();
@@ -121,7 +121,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     {
         _ledgerClient.ThrowTransientAfterCommitOnce = true;
         var service = CreateService();
-        var response = await service.CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 30000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Retry"));
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 30000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Retry"));
         response.Status.Should().Be("Processing");
         _ledgerClient.Transactions.Should().ContainSingle();
         _accountClient.CommitCount.Should().Be(0);
@@ -140,7 +140,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     {
         _ledgerClient.AlwaysUnavailable = true;
         var service = CreateService();
-        var response = await service.CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 30000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Wait"));
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 30000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Wait"));
         response.Status.Should().Be("Processing");
         response.FundsReservationId.Should().NotBeNull();
         _accountClient.ActiveReservations.Should().Be(1);
@@ -154,17 +154,114 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Concurrent_duplicate_payment_initiation_creates_one_payment_one_reservation_and_one_ledger_effect()
+    {
+        var key = "idem-concurrent-100";
+        var request = new CreatePaymentRequest(_accountA, "InternalTransfer", 1000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Concurrent retry");
+
+        var tasks = Enumerable.Range(0, 100)
+            .Select(_ => CreateService().CreateAsync(request, key))
+            .ToArray();
+        var results = await Task.WhenAll(tasks);
+
+        results.Select(item => item.Payment.PaymentId).Distinct().Should().ContainSingle();
+        var allowedStatuses = new[] { "Initiated", "PendingValidation", "FundsReserved", "Processing", "Completed" };
+        results.Should().OnlyContain(item => allowedStatuses.Contains(item.Payment.Status));
+        _accountClient.ReserveCount.Should().Be(1);
+        _accountClient.CommitCount.Should().Be(1);
+        _ledgerClient.Transactions.Should().ContainSingle();
+
+        await using var dbContext = CreateDbContext();
+        (await dbContext.IdempotencyRecords.CountAsync()).Should().Be(1);
+        (await dbContext.Payments.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Same_key_with_different_payload_returns_conflict_without_second_payment()
+    {
+        var key = "idem-conflict-amount";
+        var first = new CreatePaymentRequest(_accountA, "InternalTransfer", 10000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Original");
+        var second = first with { Amount = 20000m };
+
+        var created = await CreateService().CreateAsync(first, key);
+        Func<Task> act = () => CreateService().CreateAsync(second, key);
+
+        created.Payment.PaymentId.Should().NotBeEmpty();
+        await act.Should().ThrowAsync<IdempotencyKeyConflictException>();
+        await using var dbContext = CreateDbContext();
+        (await dbContext.IdempotencyRecords.CountAsync()).Should().Be(1);
+        (await dbContext.Payments.CountAsync()).Should().Be(1);
+        _accountClient.ReserveCount.Should().Be(1);
+        _ledgerClient.Transactions.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Lost_response_or_service_restart_replay_returns_same_payment_from_postgres()
+    {
+        var key = "idem-response-lost";
+        var request = new CreatePaymentRequest(_accountA, "InternalTransfer", 12000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Response lost");
+
+        var original = await CreateService().CreateAsync(request, key);
+        var replay = await CreateService().CreateAsync(request, key);
+
+        replay.Replayed.Should().BeTrue();
+        replay.Payment.PaymentId.Should().Be(original.Payment.PaymentId);
+        _accountClient.ReserveCount.Should().Be(1);
+        _ledgerClient.Transactions.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Duplicate_request_while_original_workflow_is_processing_returns_accepted_without_second_workflow()
+    {
+        var key = "idem-processing-duplicate";
+        var request = new CreatePaymentRequest(_accountA, "InternalTransfer", 13000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Slow rail");
+        _ledgerClient.BlockPosting = true;
+
+        var originalTask = CreateService().CreateAsync(request, key);
+        await _ledgerClient.PostingBlocked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var duplicate = await CreateService().CreateAsync(request, key);
+        duplicate.Replayed.Should().BeTrue();
+        duplicate.StatusCode.Should().Be(202);
+        duplicate.Payment.Status.Should().Be("Processing");
+        _accountClient.ReserveCount.Should().Be(1);
+        _ledgerClient.Transactions.Should().BeEmpty();
+
+        _ledgerClient.AllowPosting.SetResult();
+        var original = await originalTask;
+        duplicate.Payment.PaymentId.Should().Be(original.Payment.PaymentId);
+        _ledgerClient.Transactions.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task Request_idempotency_does_not_depend_on_redis_or_kafka_clients()
+    {
+        var key = "idem-no-cache-no-broker";
+        var request = new CreatePaymentRequest(_accountA, "InternalTransfer", 14000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "No cache");
+
+        var first = await CreateService().CreateAsync(request, key);
+        var second = await CreateService().CreateAsync(request, key);
+
+        second.Replayed.Should().BeTrue();
+        second.Payment.PaymentId.Should().Be(first.Payment.PaymentId);
+        await using var dbContext = CreateDbContext();
+        (await dbContext.OutboxMessages.CountAsync()).Should().BeGreaterThan(0);
+        (await dbContext.IdempotencyRecords.CountAsync()).Should().Be(1);
+    }
+    [Fact]
     public async Task Processing_payment_cannot_be_cancelled_without_reversal_semantics()
     {
         _ledgerClient.AlwaysUnavailable = true;
         var service = CreateService();
-        var response = await service.CreateAsync(new CreatePaymentRequest(_accountA, "InternalTransfer", 5000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), null));
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 5000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), null));
         response.Status.Should().Be("Processing");
         Func<Task> act = () => service.CancelAsync(response.PaymentId, new CancelPaymentRequest("stop"));
         await act.Should().ThrowAsync<Payments.BuildingBlocks.Application.Exceptions.ConflictException>();
         _accountClient.ActiveReservations.Should().Be(1);
     }
 
+    private static async Task<PaymentResponse> CreatePaymentAsync(PaymentService service, CreatePaymentRequest request, string? idempotencyKey = null)
+        => (await service.CreateAsync(request, idempotencyKey ?? Guid.NewGuid().ToString("D")).ConfigureAwait(false)).Payment;
     private PaymentService CreateService()
         => new(CreateDbContext(), _clock, new TestCurrentUser(_customerA), new TestRequestContext(), _accountClient, _ledgerClient, new CreatePaymentRequestValidator(), new PaymentSearchRequestValidator());
 
@@ -208,12 +305,16 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
 
     private sealed class FakeAccountClient : IAccountServiceClient
     {
+        private readonly Lock _gate = new();
+        private readonly Dictionary<string, ReservationClientResponse> _reservations = [];
+        private int _reserveCount;
+        private int _commitCount;
+
         public Dictionary<Guid, AccountClientResponse> Accounts { get; } = [];
         public decimal AvailableBalance { get; set; } = 100000m;
-        public int ReserveCount { get; private set; }
-        public int CommitCount { get; private set; }
-        public int ActiveReservations => _reservations.Values.Count(item => item.Status == "Active");
-        private readonly Dictionary<string, ReservationClientResponse> _reservations = [];
+        public int ReserveCount { get { lock (_gate) return _reserveCount; } }
+        public int CommitCount { get { lock (_gate) return _commitCount; } }
+        public int ActiveReservations { get { lock (_gate) return _reservations.Values.Count(item => item.Status == "Active"); } }
 
         public Task<AccountClientResponse> GetAccountAsync(Guid accountId, CancellationToken cancellationToken = default)
             => Task.FromResult(Accounts.TryGetValue(accountId, out var account) ? account : throw new DownstreamBusinessException(PaymentFailureReasonCode.SourceAccountNotFound, "Account not found"));
@@ -223,53 +324,86 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
 
         public Task<ReservationClientResponse> ReserveFundsAsync(Guid accountId, CreateFundsReservationCommand command, CancellationToken cancellationToken = default)
         {
-            ReserveCount++;
-            if (_reservations.TryGetValue(command.ReferenceId, out var existing)) return Task.FromResult(existing);
-            if (AvailableBalance < command.Amount) throw new DownstreamBusinessException(PaymentFailureReasonCode.InsufficientFunds, "Insufficient funds");
-            AvailableBalance -= command.Amount;
-            var reservation = new ReservationClientResponse(Guid.NewGuid(), accountId, command.ReferenceId, command.Amount, command.Currency, "Active", DateTimeOffset.UtcNow, command.ExpiresAtUtc);
-            _reservations[command.ReferenceId] = reservation;
-            return Task.FromResult(reservation);
+            lock (_gate)
+            {
+                if (_reservations.TryGetValue(command.ReferenceId, out var existing)) return Task.FromResult(existing);
+                _reserveCount++;
+                if (AvailableBalance < command.Amount) throw new DownstreamBusinessException(PaymentFailureReasonCode.InsufficientFunds, "Insufficient funds");
+                AvailableBalance -= command.Amount;
+                var reservation = new ReservationClientResponse(Guid.NewGuid(), accountId, command.ReferenceId, command.Amount, command.Currency, "Active", DateTimeOffset.UtcNow, command.ExpiresAtUtc);
+                _reservations[command.ReferenceId] = reservation;
+                return Task.FromResult(reservation);
+            }
         }
 
         public Task<ReservationClientResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
         {
-            CommitCount++;
-            var reservation = _reservations.Values.Single(item => item.ReservationId == reservationId);
-            _reservations[reservation.ReferenceId] = reservation with { Status = "Committed" };
-            return Task.FromResult(_reservations[reservation.ReferenceId]);
+            lock (_gate)
+            {
+                var reservation = _reservations.Values.Single(item => item.ReservationId == reservationId);
+                if (reservation.Status == "Committed") return Task.FromResult(reservation);
+                _commitCount++;
+                var committed = reservation with { Status = "Committed" };
+                _reservations[reservation.ReferenceId] = committed;
+                return Task.FromResult(committed);
+            }
         }
 
         public Task<ReservationClientResponse> ReleaseReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
         {
-            var reservation = _reservations.Values.Single(item => item.ReservationId == reservationId);
-            AvailableBalance += reservation.Amount;
-            _reservations[reservation.ReferenceId] = reservation with { Status = "Released" };
-            return Task.FromResult(_reservations[reservation.ReferenceId]);
+            lock (_gate)
+            {
+                var reservation = _reservations.Values.Single(item => item.ReservationId == reservationId);
+                if (reservation.Status == "Released") return Task.FromResult(reservation);
+                AvailableBalance += reservation.Amount;
+                var released = reservation with { Status = "Released" };
+                _reservations[reservation.ReferenceId] = released;
+                return Task.FromResult(released);
+            }
         }
     }
 
     private sealed class FakeLedgerClient : ILedgerServiceClient
     {
-        public bool ThrowTransientAfterCommitOnce { get; set; }
-        public bool AlwaysUnavailable { get; set; }
-        public List<PostLedgerTransactionCommand> Transactions { get; } = [];
+        private readonly Lock _gate = new();
         private readonly Dictionary<string, LedgerTransactionClientResponse> _responses = [];
 
-        public Task<LedgerTransactionClientResponse> PostTransactionAsync(PostLedgerTransactionCommand command, CancellationToken cancellationToken = default)
+        public bool ThrowTransientAfterCommitOnce { get; set; }
+        public bool AlwaysUnavailable { get; set; }
+        public bool BlockPosting { get; set; }
+        public TaskCompletionSource PostingBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource AllowPosting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public List<PostLedgerTransactionCommand> Transactions { get; } = [];
+
+        public async Task<LedgerTransactionClientResponse> PostTransactionAsync(PostLedgerTransactionCommand command, CancellationToken cancellationToken = default)
         {
-            if (_responses.TryGetValue(command.ExternalReference, out var existing)) return Task.FromResult(existing);
-            if (AlwaysUnavailable) throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Ledger unavailable");
-            Transactions.Add(command);
-            var response = new LedgerTransactionClientResponse(Guid.NewGuid(), command.ExternalReference, "Posted");
-            _responses[command.ExternalReference] = response;
-            if (ThrowTransientAfterCommitOnce)
+            lock (_gate)
             {
-                ThrowTransientAfterCommitOnce = false;
-                throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Response timed out after commit");
+                if (_responses.TryGetValue(command.ExternalReference, out var existing)) return existing;
+                if (AlwaysUnavailable) throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Ledger unavailable");
             }
 
-            return Task.FromResult(response);
+            if (BlockPosting)
+            {
+                PostingBlocked.TrySetResult();
+                await AllowPosting.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            lock (_gate)
+            {
+                if (_responses.TryGetValue(command.ExternalReference, out var existing)) return existing;
+                if (AlwaysUnavailable) throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Ledger unavailable");
+                Transactions.Add(command);
+                var response = new LedgerTransactionClientResponse(Guid.NewGuid(), command.ExternalReference, "Posted");
+                _responses[command.ExternalReference] = response;
+                if (ThrowTransientAfterCommitOnce)
+                {
+                    ThrowTransientAfterCommitOnce = false;
+                    throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Response timed out after commit");
+                }
+
+                return response;
+            }
         }
     }
 }

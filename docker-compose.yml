@@ -238,6 +238,10 @@ services:
       DownstreamServices__LedgerBaseUrl: http://ledger-api:8080
       Outbox__PublisherEnabled: "true"
       PaymentRecovery__Enabled: "true"
+      PaymentIdempotency__RetentionDays: ${PAYMENT_IDEMPOTENCY_RETENTION_DAYS:-7}
+      PaymentIdempotency__CleanupEnabled: "true"
+      PaymentIdempotency__CleanupIntervalMinutes: 60
+      PaymentIdempotency__CleanupBatchSize: 100
       Observability__EnableOtlpExporter: "false"
     ports:
       - "${PAYMENT_API_PORT:-5106}:8080"

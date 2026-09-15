@@ -16,7 +16,7 @@ public sealed record PaymentSearchRequest(string? Status, string? Type, string? 
 
 public interface IPaymentService
 {
-    Task<PaymentResponse> CreateAsync(CreatePaymentRequest request, CancellationToken cancellationToken = default);
+    Task<PaymentCreationResult> CreateAsync(CreatePaymentRequest request, string idempotencyKey, CancellationToken cancellationToken = default);
     Task<PaymentDetailResponse> GetAsync(Guid paymentId, CancellationToken cancellationToken = default);
     Task<IReadOnlyCollection<PaymentTimelineEntryResponse>> GetTimelineAsync(Guid paymentId, CancellationToken cancellationToken = default);
     Task<PaymentPageResponse> ListAsync(PaymentSearchRequest request, CancellationToken cancellationToken = default);

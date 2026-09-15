@@ -2,7 +2,7 @@
 
 ## Overview
 
-`FintechPaymentsPlatform` is the engineering foundation for a production-grade financial transaction platform. Week 1 established the platform foundation. Week 2 added Identity and Customer bounded contexts. Week 3 added Account and Wallet foundations. Week 4 added a double-entry Ledger service for immutable, balanced, idempotent, auditable financial postings, reversals, balance projections, and integrity verification. Week 5 adds a Payment service for payment intent, explicit lifecycle orchestration, funds reservation, ledger posting, cancellation rules, recovery, audit, and payment lifecycle events.
+`FintechPaymentsPlatform` is the engineering foundation for a production-grade financial transaction platform. Week 1 established the platform foundation. Week 2 added Identity and Customer bounded contexts. Week 3 added Account and Wallet foundations. Week 4 added a double-entry Ledger service for immutable, balanced, idempotent, auditable financial postings, reversals, balance projections, and integrity verification. Week 5 added a Payment service for payment intent, explicit lifecycle orchestration, funds reservation, ledger posting, cancellation rules, recovery, audit, and payment lifecycle events. Week 6 adds PostgreSQL-backed request idempotency for duplicate-safe payment initiation.
 
 ## Current Status
 
@@ -11,7 +11,8 @@ Week 2 - Identity & Customer - Complete
 Week 3 - Accounts & Wallets - Complete
 Week 4 - Double-Entry Ledger - Complete
 Week 5 - Payment Initiation - Complete
-Week 6 - Request Idempotency - Next
+Week 6 - Request Idempotency - Complete
+Week 7 - Kafka & Transactional Outbox - Next
 
 ## Current Architecture
 
@@ -47,7 +48,7 @@ Client
                  PostgreSQL
 ```
 
-Identity owns users, credentials, roles, permissions, refresh tokens, security audit events, and outbox messages. Customer owns customer profile, customer lifecycle status, KYC status foundation, customer audit events, processed integration events, and customer lifecycle outbox messages. Account owns wallet accounts, account numbers, account status, restrictions, operational reservations, beneficiaries, audit events, processed integration events, and account outbox messages. Ledger owns finalized financial postings, ledger accounts, reversals, balance projections, integrity checks, audit events, and ledger outbox messages. Payment owns payment intent, payment state transitions, orchestration metadata, recovery state, audit events, and payment lifecycle outbox messages.
+Identity owns users, credentials, roles, permissions, refresh tokens, security audit events, and outbox messages. Customer owns customer profile, customer lifecycle status, KYC status foundation, customer audit events, processed integration events, and customer lifecycle outbox messages. Account owns wallet accounts, account numbers, account status, restrictions, operational reservations, beneficiaries, audit events, processed integration events, and account outbox messages. Ledger owns finalized financial postings, ledger accounts, reversals, balance projections, integrity checks, audit events, and ledger outbox messages. Payment owns payment intent, request idempotency records, payment state transitions, orchestration metadata, recovery state, audit events, and payment lifecycle outbox messages.
 
 ## Technology Stack
 
@@ -90,7 +91,7 @@ Sample flow:
 12. `POST /api/v1/beneficiaries`
 13. Account publishes `account.lifecycle.v1`; Ledger consumes wallet account creation into liability ledger accounts.
 14. `POST /api/v1/ledger/transactions` for privileged finalized financial postings.
-15. `POST /api/v1/payments` to initiate an internal transfer through Payment orchestration.
+15. `POST /api/v1/payments` with `Idempotency-Key` to initiate an internal transfer through duplicate-safe Payment orchestration.
 16. `GET /api/v1/payments/{paymentId}/timeline` to inspect state history.
 17. `POST /api/v1/auth/refresh`
 18. `POST /api/v1/auth/logout`
@@ -109,7 +110,7 @@ Privileged customer lifecycle operations require `customer.suspend` or `customer
 
 `src/Services/Ledger` contains the Double-Entry Ledger bounded context.
 
-`src/Services/Payment` contains the Payment Initiation and state-machine orchestration bounded context.
+`src/Services/Payment` contains the Payment Initiation, request idempotency, and state-machine orchestration bounded context.
 
 `src/Services/Payments.Service.Template` remains as the Week 1 proof service.
 
@@ -121,4 +122,4 @@ Privileged customer lifecycle operations require `customer.suspend` or `customer
 
 ## Engineering Principles
 
-Domain remains persistence-agnostic. Application orchestrates use cases. Infrastructure owns external concerns. API handles transport only. Endpoints do not call PostgreSQL, Redis, Kafka, or AWS directly. Domain events are internal; integration events are external contracts. Identity, Customer, Account, Ledger, and Payment communicate through Kafka contracts and service-boundary clients, not direct database access.
+Payment request idempotency is documented in `docs/payments/idempotency.md`. Domain remains persistence-agnostic. Application orchestrates use cases. Infrastructure owns external concerns. API handles transport only. Endpoints do not call PostgreSQL, Redis, Kafka, or AWS directly. Domain events are internal; integration events are external contracts. Identity, Customer, Account, Ledger, and Payment communicate through Kafka contracts and service-boundary clients, not direct database access.
