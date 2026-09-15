@@ -244,6 +244,22 @@ public sealed class AccountService : IAccountService
         }
     }
 
+    public async Task<ReservationResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        var now = _clock.UtcNow;
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false);
+        var account = await _dbContext.Accounts.FromSqlInterpolated($"SELECT * FROM account.accounts WHERE \"Id\" = {accountId} FOR UPDATE").SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+            ?? throw new NotFoundException("Account", accountId.ToString("D"));
+        EnsureCanAccess(account);
+        var reservation = await _dbContext.FundsReservations.SingleOrDefaultAsync(item => item.Id == reservationId && item.AccountId == accountId, cancellationToken).ConfigureAwait(false)
+            ?? throw new NotFoundException("FundsReservation", reservationId.ToString("D"));
+        account.CommitReservation(reservation, now);
+        AddAudit("FundsReservationCommitted", account.Id, account.CustomerId, RequireUserIdOrNull(), now, null, JsonSerializer.Serialize(new { reservationId = reservation.Id, amount = reservation.Amount, currency = reservation.Currency.Code }));
+        AddReservationOutbox(account, reservation, "Committed", now);
+        await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return Map(reservation);
+    }
     public async Task<ReservationResponse> ReleaseReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
     {
         var now = _clock.UtcNow;

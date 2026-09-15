@@ -208,6 +208,45 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  payment-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.payment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      account-api:
+        condition: service_healthy
+      ledger-api:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      PaymentDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_payment;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      Redis__ConnectionString: redis:6379
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ProducerName: payment-service
+      Jwt__Issuer: FintechPaymentsPlatform
+      Jwt__Audience: FintechPaymentsPlatform.Api
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      DownstreamServices__AccountBaseUrl: http://account-api:8080
+      DownstreamServices__LedgerBaseUrl: http://ledger-api:8080
+      Outbox__PublisherEnabled: "true"
+      PaymentRecovery__Enabled: "true"
+      Observability__EnableOtlpExporter: "false"
+    ports:
+      - "${PAYMENT_API_PORT:-5106}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres-data:
   redis-data:

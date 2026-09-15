@@ -28,6 +28,7 @@ public interface IAccountService
     Task<AccountRestrictionResponse> AddRestrictionAsync(Guid accountId, CreateRestrictionRequest request, CancellationToken cancellationToken = default);
     Task RemoveRestrictionAsync(Guid accountId, Guid restrictionId, CancellationToken cancellationToken = default);
     Task<ReservationResponse> ReserveFundsAsync(Guid accountId, CreateReservationRequest request, CancellationToken cancellationToken = default);
+    Task<ReservationResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default);
     Task<ReservationResponse> ReleaseReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default);
 }
 

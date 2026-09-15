@@ -213,6 +213,31 @@ namespace Payments.Identity.Infrastructure.Persistence.Migrations
                         {
                             Id = new Guid("20000000-0000-0000-0000-000000000025"),
                             Name = "ledger.audit.read"
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000026"),
+                            Name = "payment.create"
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000027"),
+                            Name = "payment.read.self"
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000028"),
+                            Name = "payment.read.any"
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000029"),
+                            Name = "payment.cancel.self"
+                        },
+                        new
+                        {
+                            Id = new Guid("20000000-0000-0000-0000-000000000030"),
+                            Name = "payment.cancel.any"
                         });
                 });
 
@@ -361,6 +386,21 @@ namespace Payments.Identity.Infrastructure.Persistence.Migrations
                         },
                         new
                         {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000026")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000027")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000001"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000029")
+                        },
+                        new
+                        {
                             RoleId = new Guid("10000000-0000-0000-0000-000000000002"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000003")
                         },
@@ -421,6 +461,16 @@ namespace Payments.Identity.Infrastructure.Persistence.Migrations
                         },
                         new
                         {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000002"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000028")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000002"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000030")
+                        },
+                        new
+                        {
                             RoleId = new Guid("10000000-0000-0000-0000-000000000004"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000003")
                         },
@@ -438,6 +488,11 @@ namespace Payments.Identity.Infrastructure.Persistence.Migrations
                         {
                             RoleId = new Guid("10000000-0000-0000-0000-000000000004"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000022")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000004"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000028")
                         },
                         new
                         {
@@ -553,6 +608,31 @@ namespace Payments.Identity.Infrastructure.Persistence.Migrations
                         {
                             RoleId = new Guid("10000000-0000-0000-0000-000000000003"),
                             PermissionId = new Guid("20000000-0000-0000-0000-000000000025")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000026")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000027")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000028")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000029")
+                        },
+                        new
+                        {
+                            RoleId = new Guid("10000000-0000-0000-0000-000000000003"),
+                            PermissionId = new Guid("20000000-0000-0000-0000-000000000030")
                         });
                 });
 

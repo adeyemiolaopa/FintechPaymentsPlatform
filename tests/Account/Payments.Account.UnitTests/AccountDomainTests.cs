@@ -40,6 +40,21 @@ public sealed class AccountDomainTests
     }
 
     [Fact]
+    public void Commit_reservation_reduces_reserved_balance_without_mutating_ledger_balance()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var account = Account.Domain.Accounts.Account.OpenWallet(Guid.NewGuid(), AccountNumber.Generate(), Currency.FromCode("NGN"), now);
+        account.SeedLedgerBalanceForTest(Money.Of(100_000m, Currency.FromCode("NGN")), now);
+        var reservation = account.ReserveFunds("payment-1", Money.Of(30_000m, Currency.FromCode("NGN")), now, now.AddMinutes(10), debitBlocked: false);
+
+        account.CommitReservation(reservation, now.AddMinutes(1));
+
+        account.LedgerBalance.Should().Be(100_000m);
+        account.ReservedBalance.Should().Be(0m);
+        account.AvailableBalance.Should().Be(100_000m);
+        reservation.Status.Should().Be(FundsReservationStatus.Committed);
+    }
+    [Fact]
     public void Frozen_account_cannot_reserve()
     {
         var now = DateTimeOffset.UtcNow;

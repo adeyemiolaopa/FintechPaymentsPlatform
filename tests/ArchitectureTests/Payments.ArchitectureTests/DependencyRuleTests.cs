@@ -145,4 +145,37 @@ public sealed class DependencyRuleTests
 
         Assert.True(result.IsSuccessful, string.Join(Environment.NewLine, result.FailingTypes ?? []));
     }
+
+    [Fact]
+    public void Payment_domain_does_not_depend_on_infrastructure_or_api()
+    {
+        var result = Types.InAssembly(typeof(Payments.Payment.Domain.Payments.Payment).Assembly)
+            .ShouldNot()
+            .HaveDependencyOnAny("Payments.Payment.Infrastructure", "Payments.Payment.Api")
+            .GetResult();
+
+        Assert.True(result.IsSuccessful, string.Join(Environment.NewLine, result.FailingTypes ?? []));
+    }
+
+    [Fact]
+    public void Payment_application_does_not_depend_on_api_or_infrastructure()
+    {
+        var result = Types.InAssembly(typeof(Payments.Payment.Application.Payments.IPaymentService).Assembly)
+            .ShouldNot()
+            .HaveDependencyOnAny("Payments.Payment.Api", "Payments.Payment.Infrastructure")
+            .GetResult();
+
+        Assert.True(result.IsSuccessful, string.Join(Environment.NewLine, result.FailingTypes ?? []));
+    }
+
+    [Fact]
+    public void Payment_service_does_not_reference_other_service_infrastructure()
+    {
+        var result = Types.InAssembly(typeof(Payments.Payment.Infrastructure.DependencyInjection).Assembly)
+            .ShouldNot()
+            .HaveDependencyOnAny("Payments.Account.Infrastructure", "Payments.Ledger.Infrastructure", "Payments.Customer.Infrastructure", "Payments.Identity.Infrastructure")
+            .GetResult();
+
+        Assert.True(result.IsSuccessful, string.Join(Environment.NewLine, result.FailingTypes ?? []));
+    }
 }

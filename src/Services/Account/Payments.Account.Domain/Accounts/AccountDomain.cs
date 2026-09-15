@@ -318,10 +318,9 @@ public sealed class Account : AggregateRoot<Guid>
 
         reservation.Commit(now);
         ReservedBalance -= reservation.Amount;
-        LedgerBalance -= reservation.Amount;
-        if (ReservedBalance < 0m || LedgerBalance < 0m)
+        if (ReservedBalance < 0m)
         {
-            throw new DomainException("account.negative_balance", "Customer wallets do not allow overdrafts.");
+            throw new DomainException("account.reserved_negative", "Reserved balance cannot become negative.");
         }
 
         Touch(now);

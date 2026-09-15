@@ -21,6 +21,7 @@ jobs:
       - run: docker build -f deploy/docker/Dockerfile.customer -t payments-customer-api:ci .
       - run: docker build -f deploy/docker/Dockerfile.account -t payments-account-api:ci .
       - run: docker build -f deploy/docker/Dockerfile.ledger -t payments-ledger-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile.payment -t payments-payment-api:ci .
       - uses: actions/upload-artifact@v4
         if: always()
         with:

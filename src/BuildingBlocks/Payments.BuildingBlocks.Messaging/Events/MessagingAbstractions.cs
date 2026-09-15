@@ -126,6 +126,19 @@ public sealed record LedgerTransactionReversedIntegrationEvent(
     public static string EventType => "ledger.transaction.reversed";
     public static int EventVersion => 1;
 }
+
+public sealed record PaymentLifecycleIntegrationEvent(
+    Guid PaymentId,
+    Guid CustomerId,
+    string PaymentReference,
+    string PaymentType,
+    string Status,
+    string Currency,
+    string? ReasonCode) : IIntegrationEvent
+{
+    public static string EventType => "payment.lifecycle.changed";
+    public static int EventVersion => 1;
+}
 public interface IEventPublisher
 {
     Task PublishAsync<TPayload>(string topic, TPayload payload, CancellationToken cancellationToken = default)

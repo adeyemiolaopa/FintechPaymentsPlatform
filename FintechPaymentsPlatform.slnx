@@ -31,7 +31,12 @@
     <Project Path="src/Services/Ledger/Payments.Ledger.Domain/Payments.Ledger.Domain.csproj" />
     <Project Path="src/Services/Ledger/Payments.Ledger.Infrastructure/Payments.Ledger.Infrastructure.csproj" />
   </Folder>
-  <Folder Name="/src/Services/Payments.Service.Template/">
+  <Folder Name="/src/Services/Payment/">
+    <Project Path="src/Services/Payment/Payments.Payment.Api/Payments.Payment.Api.csproj" />
+    <Project Path="src/Services/Payment/Payments.Payment.Application/Payments.Payment.Application.csproj" />
+    <Project Path="src/Services/Payment/Payments.Payment.Domain/Payments.Payment.Domain.csproj" />
+    <Project Path="src/Services/Payment/Payments.Payment.Infrastructure/Payments.Payment.Infrastructure.csproj" />
+  </Folder>  <Folder Name="/src/Services/Payments.Service.Template/">
     <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Api/Payments.Service.Template.Api.csproj" />
     <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Application/Payments.Service.Template.Application.csproj" />
     <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Domain/Payments.Service.Template.Domain.csproj" />
@@ -56,7 +61,10 @@
     <Project Path="tests/Ledger/Payments.Ledger.UnitTests/Payments.Ledger.UnitTests.csproj" />
     <Project Path="tests/Ledger/Payments.Ledger.IntegrationTests/Payments.Ledger.IntegrationTests.csproj" />
   </Folder>
-  <Folder Name="/tests/IntegrationTests/">
+  <Folder Name="/tests/Payment/">
+    <Project Path="tests/Payment/Payments.Payment.UnitTests/Payments.Payment.UnitTests.csproj" />
+    <Project Path="tests/Payment/Payments.Payment.IntegrationTests/Payments.Payment.IntegrationTests.csproj" />
+  </Folder>  <Folder Name="/tests/IntegrationTests/">
     <Project Path="tests/IntegrationTests/Payments.IntegrationTests/Payments.IntegrationTests.csproj" />
   </Folder>
   <Folder Name="/tests/UnitTests/">

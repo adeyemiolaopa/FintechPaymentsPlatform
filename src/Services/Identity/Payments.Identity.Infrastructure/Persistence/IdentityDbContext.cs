@@ -143,6 +143,11 @@ public static class IdentitySeed
     public static readonly Guid LedgerTransactionReverseId = Guid.Parse("20000000-0000-0000-0000-000000000023");
     public static readonly Guid LedgerIntegrityReadId = Guid.Parse("20000000-0000-0000-0000-000000000024");
     public static readonly Guid LedgerAuditReadId = Guid.Parse("20000000-0000-0000-0000-000000000025");
+    public static readonly Guid PaymentCreateId = Guid.Parse("20000000-0000-0000-0000-000000000026");
+    public static readonly Guid PaymentReadSelfId = Guid.Parse("20000000-0000-0000-0000-000000000027");
+    public static readonly Guid PaymentReadAnyId = Guid.Parse("20000000-0000-0000-0000-000000000028");
+    public static readonly Guid PaymentCancelSelfId = Guid.Parse("20000000-0000-0000-0000-000000000029");
+    public static readonly Guid PaymentCancelAnyId = Guid.Parse("20000000-0000-0000-0000-000000000030");
 
     public static readonly Role[] Roles =
     [
@@ -179,6 +184,11 @@ public static class IdentitySeed
         new(LedgerTransactionReverseId, "ledger.transaction.reverse"),
         new(LedgerIntegrityReadId, "ledger.integrity.read"),
         new(LedgerAuditReadId, "ledger.audit.read"),
+        new(PaymentCreateId, "payment.create"),
+        new(PaymentReadSelfId, "payment.read.self"),
+        new(PaymentReadAnyId, "payment.read.any"),
+        new(PaymentCancelSelfId, "payment.cancel.self"),
+        new(PaymentCancelAnyId, "payment.cancel.any"),
     ];
 
     public static readonly RolePermission[] RolePermissions =
@@ -190,6 +200,9 @@ public static class IdentitySeed
         new(CustomerRoleId, BeneficiaryReadSelfId),
         new(CustomerRoleId, BeneficiaryCreateId),
         new(CustomerRoleId, BeneficiaryRemoveId),
+        new(CustomerRoleId, PaymentCreateId),
+        new(CustomerRoleId, PaymentReadSelfId),
+        new(CustomerRoleId, PaymentCancelSelfId),
         new(OperationsRoleId, CustomerReadAnyId),
         new(OperationsRoleId, CustomerSuspendId),
         new(OperationsRoleId, CustomerActivateId),
@@ -202,10 +215,13 @@ public static class IdentitySeed
         new(OperationsRoleId, LedgerAccountReadId),
         new(OperationsRoleId, LedgerTransactionReadId),
         new(OperationsRoleId, LedgerIntegrityReadId),
+        new(OperationsRoleId, PaymentReadAnyId),
+        new(OperationsRoleId, PaymentCancelAnyId),
         new(SupportRoleId, CustomerReadAnyId),
         new(SupportRoleId, AccountReadAnyId),
         new(SupportRoleId, LedgerAccountReadId),
         new(SupportRoleId, LedgerTransactionReadId),
+        new(SupportRoleId, PaymentReadAnyId),
         new(AdministratorRoleId, CustomerReadAnyId),
         new(AdministratorRoleId, CustomerSuspendId),
         new(AdministratorRoleId, CustomerActivateId),
@@ -229,6 +245,11 @@ public static class IdentitySeed
         new(AdministratorRoleId, LedgerTransactionReverseId),
         new(AdministratorRoleId, LedgerIntegrityReadId),
         new(AdministratorRoleId, LedgerAuditReadId),
+        new(AdministratorRoleId, PaymentCreateId),
+        new(AdministratorRoleId, PaymentReadSelfId),
+        new(AdministratorRoleId, PaymentReadAnyId),
+        new(AdministratorRoleId, PaymentCancelSelfId),
+        new(AdministratorRoleId, PaymentCancelAnyId),
     ];
 }
 

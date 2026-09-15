@@ -9,3 +9,6 @@ The API exposes self-service account creation, account listing, balance lookup, 
 Persistence is PostgreSQL in the `account` schema. Money values are stored as `numeric(19,4)`, with database check constraints enforcing non-negative ledger and reserved balances and non-negative available balance. Integration events are published through an outbox to avoid dual writes.
 
 Ledger Service owns finalized double-entry postings. Account Service owns customer account lifecycle and operational restrictions/reservations. Account-created events are consumed by Ledger to create wallet liability ledger accounts; Account does not write Ledger tables directly.
+
+
+Payment Service calls Account Service for account validation, reservation creation, reservation commit, and reservation release through service boundaries. It must not query or mutate Account database tables directly.
