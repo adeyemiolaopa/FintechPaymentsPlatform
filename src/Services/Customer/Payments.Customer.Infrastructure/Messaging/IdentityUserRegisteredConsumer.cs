@@ -1,10 +1,8 @@
-using System.Text.Json;
-using Confluent.Kafka;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Payments.BuildingBlocks.Messaging.Events;
+using Payments.Customer.Infrastructure.Persistence;
 
 namespace Payments.Customer.Infrastructure.Messaging;
 
@@ -13,68 +11,39 @@ public sealed class CustomerConsumerOptions
     public const string SectionName = "CustomerConsumer";
 
     public bool Enabled { get; init; } = true;
-    public string GroupId { get; init; } = "customer-service";
+    public string ConsumerName { get; init; } = "customer.identity-user-registered-v1";
+    public string GroupId { get; init; } = "customer-service-v1";
     public string Topic { get; init; } = "identity.lifecycle.v1";
+    public string[] RetryTopics { get; init; } = ["identity.lifecycle.v1.retry.1m"];
+    public string DeadLetterTopic { get; init; } = "customer.identity.lifecycle.v1.dlq";
+    public int ImmediateRetryCount { get; init; } = 3;
+    public int ProcessingTimeoutSeconds { get; init; } = 300;
+    public int MaxPollIntervalMs { get; init; } = 300000;
+    public int MaxPollRecords { get; init; } = 10;
 }
 
-public sealed class IdentityUserRegisteredConsumer : BackgroundService
+public sealed class IdentityUserRegisteredConsumer : KafkaInboxConsumer<IdentityUserRegisteredIntegrationEvent, CustomerDbContext, IdentityUserRegisteredHandler>
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly IServiceScopeFactory _scopeFactory;
-    private readonly KafkaOptions _kafkaOptions;
-    private readonly CustomerConsumerOptions _options;
-    private readonly ILogger<IdentityUserRegisteredConsumer> _logger;
-
     public IdentityUserRegisteredConsumer(IServiceScopeFactory scopeFactory, IOptions<KafkaOptions> kafkaOptions, IOptions<CustomerConsumerOptions> options, ILogger<IdentityUserRegisteredConsumer> logger)
+        : base(scopeFactory, kafkaOptions, ToInboxOptions(options.Value), logger)
     {
-        _scopeFactory = scopeFactory;
-        _kafkaOptions = kafkaOptions.Value;
-        _options = options.Value;
-        _logger = logger;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        if (!_options.Enabled)
-        {
-            return;
-        }
+    protected override string ExpectedEventType => IdentityUserRegisteredIntegrationEvent.EventType;
+    protected override int ExpectedEventVersion => IdentityUserRegisteredIntegrationEvent.EventVersion;
 
-        var config = new ConsumerConfig
+    private static InboxConsumerOptions ToInboxOptions(CustomerConsumerOptions options)
+        => new()
         {
-            BootstrapServers = _kafkaOptions.BootstrapServers,
-            GroupId = _options.GroupId,
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            EnableAutoCommit = false,
+            Enabled = options.Enabled,
+            ConsumerName = options.ConsumerName,
+            GroupId = options.GroupId,
+            Topic = options.Topic,
+            RetryTopics = options.RetryTopics,
+            DeadLetterTopic = options.DeadLetterTopic,
+            ImmediateRetryCount = options.ImmediateRetryCount,
+            ProcessingTimeoutSeconds = options.ProcessingTimeoutSeconds,
+            MaxPollIntervalMs = options.MaxPollIntervalMs,
+            MaxPollRecords = options.MaxPollRecords,
         };
-
-        using var consumer = new ConsumerBuilder<string, string>(config).Build();
-        consumer.Subscribe(_options.Topic);
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                var result = consumer.Consume(TimeSpan.FromSeconds(1));
-                if (result is null)
-                {
-                    await Task.Yield();
-                    continue;
-                }
-
-                var envelope = JsonSerializer.Deserialize<IntegrationEventEnvelope<IdentityUserRegisteredIntegrationEvent>>(result.Message.Value, SerializerOptions);
-                if (envelope is not null && envelope.EventType == IdentityUserRegisteredIntegrationEvent.EventType)
-                {
-                    await using var scope = _scopeFactory.CreateAsyncScope();
-                    await scope.ServiceProvider.GetRequiredService<IdentityUserRegisteredHandler>().HandleAsync(envelope, stoppingToken).ConfigureAwait(false);
-                }
-
-                consumer.Commit(result);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                _logger.LogWarning(exception, "Customer identity lifecycle consumer failed while processing message");
-            }
-        }
-    }
 }
-

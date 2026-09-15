@@ -6,7 +6,7 @@ using Payments.BuildingBlocks.Messaging.Events;
 
 namespace Payments.Account.Infrastructure.Messaging;
 
-public sealed class CustomerLifecycleHandler
+public sealed class CustomerLifecycleHandler : IIntegrationEventHandler<CustomerLifecycleIntegrationEvent>
 {
     private readonly AccountDbContext _dbContext;
     private readonly IClock _clock;
@@ -17,7 +17,13 @@ public sealed class CustomerLifecycleHandler
         _clock = clock;
     }
 
-    public async Task HandleAsync(IntegrationEventEnvelope<CustomerLifecycleIntegrationEvent> envelope, CancellationToken cancellationToken = default)
+
+    public Task HandleAsync(IntegrationEventEnvelope<CustomerLifecycleIntegrationEvent> envelope, CancellationToken cancellationToken = default)
+        => HandleAsync(envelope, CreateDefaultContext(envelope), cancellationToken);
+
+    private static IntegrationEventContext CreateDefaultContext(IntegrationEventEnvelope<CustomerLifecycleIntegrationEvent> envelope)
+        => new(envelope.EventId, envelope.EventType, envelope.EventVersion, "direct-test", string.Empty, 0, 0, envelope.CorrelationId, envelope.CausationId, envelope.OccurredAtUtc, string.Empty);
+    public async Task HandleAsync(IntegrationEventEnvelope<CustomerLifecycleIntegrationEvent> envelope, IntegrationEventContext context, CancellationToken cancellationToken = default)
     {
         if (await _dbContext.ProcessedIntegrationEvents.AnyAsync(processed => processed.EventId == envelope.EventId, cancellationToken).ConfigureAwait(false))
         {

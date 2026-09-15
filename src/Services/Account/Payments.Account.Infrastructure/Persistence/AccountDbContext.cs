@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Payments.Account.Domain.Accounts;
 using Payments.BuildingBlocks.Application.Abstractions;
+using Payments.BuildingBlocks.Messaging.Events;
 
 namespace Payments.Account.Infrastructure.Persistence;
 
@@ -18,12 +19,14 @@ public sealed class AccountDbContext : DbContext, IUnitOfWork
     public DbSet<AccountAuditEvent> AccountAuditEvents => Set<AccountAuditEvent>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<ProcessedIntegrationEvent> ProcessedIntegrationEvents => Set<ProcessedIntegrationEvent>();
+    public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var currencyConverter = new ValueConverter<Currency, string>(currency => currency.Code, code => Currency.FromCode(code));
         var accountNumberConverter = new ValueConverter<AccountNumber, string>(number => number.Value, value => AccountNumber.Create(value));
 
+        modelBuilder.ConfigureInboxMessages();
         modelBuilder.HasDefaultSchema("account");
         modelBuilder.Entity<Domain.Accounts.Account>(builder =>
         {

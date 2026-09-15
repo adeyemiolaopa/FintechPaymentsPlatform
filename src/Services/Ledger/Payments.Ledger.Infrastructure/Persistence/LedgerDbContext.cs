@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Payments.BuildingBlocks.Application.Abstractions;
+using Payments.BuildingBlocks.Messaging.Events;
 using Payments.BuildingBlocks.Domain.Primitives;
 using Payments.Ledger.Domain.Ledger;
 
@@ -20,10 +21,12 @@ public sealed class LedgerDbContext : DbContext, IUnitOfWork
     public DbSet<LedgerAuditEvent> LedgerAuditEvents => Set<LedgerAuditEvent>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
     public DbSet<ProcessedIntegrationEvent> ProcessedIntegrationEvents => Set<ProcessedIntegrationEvent>();
+    public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var currencyConverter = new ValueConverter<Currency, string>(currency => currency.Code, code => Currency.FromCode(code));
+        modelBuilder.ConfigureInboxMessages();
         modelBuilder.HasDefaultSchema("ledger");
 
         modelBuilder.Entity<LedgerAccount>(builder =>

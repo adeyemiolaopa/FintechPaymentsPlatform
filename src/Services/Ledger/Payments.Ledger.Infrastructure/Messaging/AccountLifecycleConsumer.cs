@@ -1,10 +1,8 @@
-using System.Text.Json;
-using Confluent.Kafka;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Payments.BuildingBlocks.Messaging.Events;
+using Payments.Ledger.Infrastructure.Persistence;
 
 namespace Payments.Ledger.Infrastructure.Messaging;
 
@@ -12,65 +10,39 @@ public sealed class AccountLifecycleConsumerOptions
 {
     public const string SectionName = "LedgerConsumer";
     public bool Enabled { get; init; } = true;
-    public string GroupId { get; init; } = "ledger-service";
+    public string ConsumerName { get; init; } = "ledger.account-lifecycle-v1";
+    public string GroupId { get; init; } = "ledger-service-v1";
     public string AccountLifecycleTopic { get; init; } = "account.lifecycle.v1";
+    public string[] RetryTopics { get; init; } = ["account.lifecycle.v1.retry.1m"];
+    public string DeadLetterTopic { get; init; } = "ledger.account.lifecycle.v1.dlq";
+    public int ImmediateRetryCount { get; init; } = 3;
+    public int ProcessingTimeoutSeconds { get; init; } = 300;
+    public int MaxPollIntervalMs { get; init; } = 300000;
+    public int MaxPollRecords { get; init; } = 10;
 }
 
-public sealed class AccountLifecycleConsumer : BackgroundService
+public sealed class AccountLifecycleConsumer : KafkaInboxConsumer<AccountLifecycleIntegrationEvent, LedgerDbContext, AccountLifecycleHandler>
 {
-    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly IServiceScopeFactory _scopeFactory;
-    private readonly KafkaOptions _kafkaOptions;
-    private readonly AccountLifecycleConsumerOptions _options;
-    private readonly ILogger<AccountLifecycleConsumer> _logger;
-
     public AccountLifecycleConsumer(IServiceScopeFactory scopeFactory, IOptions<KafkaOptions> kafkaOptions, IOptions<AccountLifecycleConsumerOptions> options, ILogger<AccountLifecycleConsumer> logger)
+        : base(scopeFactory, kafkaOptions, ToInboxOptions(options.Value), logger)
     {
-        _scopeFactory = scopeFactory;
-        _kafkaOptions = kafkaOptions.Value;
-        _options = options.Value;
-        _logger = logger;
     }
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        if (!_options.Enabled)
-        {
-            return;
-        }
+    protected override string ExpectedEventType => AccountLifecycleIntegrationEvent.EventType;
+    protected override int ExpectedEventVersion => AccountLifecycleIntegrationEvent.EventVersion;
 
-        using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+    private static InboxConsumerOptions ToInboxOptions(AccountLifecycleConsumerOptions options)
+        => new()
         {
-            BootstrapServers = _kafkaOptions.BootstrapServers,
-            GroupId = _options.GroupId,
-            AutoOffsetReset = AutoOffsetReset.Earliest,
-            EnableAutoCommit = false,
-        }).Build();
-        consumer.Subscribe(_options.AccountLifecycleTopic);
-        while (!stoppingToken.IsCancellationRequested)
-        {
-            try
-            {
-                var result = consumer.Consume(TimeSpan.FromSeconds(1));
-                if (result is null)
-                {
-                    await Task.Yield();
-                    continue;
-                }
-
-                var envelope = JsonSerializer.Deserialize<IntegrationEventEnvelope<AccountLifecycleIntegrationEvent>>(result.Message.Value, SerializerOptions);
-                if (envelope is not null && envelope.EventType == AccountLifecycleIntegrationEvent.EventType)
-                {
-                    await using var scope = _scopeFactory.CreateAsyncScope();
-                    await scope.ServiceProvider.GetRequiredService<AccountLifecycleHandler>().HandleAsync(envelope, stoppingToken).ConfigureAwait(false);
-                }
-
-                consumer.Commit(result);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                _logger.LogWarning(exception, "Ledger account lifecycle consumer failed while processing message");
-            }
-        }
-    }
+            Enabled = options.Enabled,
+            ConsumerName = options.ConsumerName,
+            GroupId = options.GroupId,
+            Topic = options.AccountLifecycleTopic,
+            RetryTopics = options.RetryTopics,
+            DeadLetterTopic = options.DeadLetterTopic,
+            ImmediateRetryCount = options.ImmediateRetryCount,
+            ProcessingTimeoutSeconds = options.ProcessingTimeoutSeconds,
+            MaxPollIntervalMs = options.MaxPollIntervalMs,
+            MaxPollRecords = options.MaxPollRecords,
+        };
 }

@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Payments.BuildingBlocks.Application.Abstractions;
+using Payments.BuildingBlocks.Messaging.Events;
 using Payments.Payment.Domain.Payments;
 
 namespace Payments.Payment.Infrastructure.Persistence;
@@ -17,10 +18,12 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
     public DbSet<AccountReference> AccountReferences => Set<AccountReference>();
     public DbSet<ProcessedIntegrationEvent> ProcessedIntegrationEvents => Set<ProcessedIntegrationEvent>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         var currencyConverter = new ValueConverter<Currency, string>(currency => currency.Code, code => Currency.FromCode(code));
+        modelBuilder.ConfigureInboxMessages();
         modelBuilder.HasDefaultSchema("payment");
 
         modelBuilder.Entity<Domain.Payments.Payment>(builder =>

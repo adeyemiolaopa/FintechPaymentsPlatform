@@ -227,4 +227,22 @@ public sealed class DependencyRuleTests
 
         Assert.Contains("Confluent.Kafka", references);
     }
+    [Fact]
+    public void Live_kafka_consumers_use_inbox_consumer_base()
+    {
+        Assert.True(IsInboxConsumer(typeof(Payments.Customer.Infrastructure.Messaging.IdentityUserRegisteredConsumer)));
+        Assert.True(IsInboxConsumer(typeof(Payments.Account.Infrastructure.Messaging.CustomerLifecycleConsumer)));
+        Assert.True(IsInboxConsumer(typeof(Payments.Ledger.Infrastructure.Messaging.AccountLifecycleConsumer)));
+    }
+
+    private static bool IsInboxConsumer(Type type)
+    {
+        while (type.BaseType is not null)
+        {
+            if (type.BaseType.IsGenericType && type.BaseType.GetGenericTypeDefinition() == typeof(Payments.BuildingBlocks.Messaging.Events.KafkaInboxConsumer<,,>)) return true;
+            type = type.BaseType;
+        }
+
+        return false;
+    }
 }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-`FintechPaymentsPlatform` is the engineering foundation for a production-grade financial transaction platform. Week 1 established the platform foundation. Week 2 added Identity and Customer bounded contexts. Week 3 added Account and Wallet foundations. Week 4 added a double-entry Ledger service for immutable, balanced, idempotent, auditable financial postings, reversals, balance projections, and integrity verification. Week 5 added a Payment service for payment intent, explicit lifecycle orchestration, funds reservation, ledger posting, cancellation rules, recovery, audit, and payment lifecycle events. Week 6 added PostgreSQL-backed request idempotency for duplicate-safe payment initiation. Week 7 adds Kafka topic governance, standardized transactional outbox delivery, idempotent producer configuration, retry/backoff, failed message inspection, and published-message cleanup.
+`FintechPaymentsPlatform` is the engineering foundation for a production-grade financial transaction platform. Week 1 established the platform foundation. Week 2 added Identity and Customer bounded contexts. Week 3 added Account and Wallet foundations. Week 4 added a double-entry Ledger service for immutable, balanced, idempotent, auditable financial postings, reversals, balance projections, and integrity verification. Week 5 added a Payment service for payment intent, explicit lifecycle orchestration, funds reservation, ledger posting, cancellation rules, recovery, audit, and payment lifecycle events. Week 6 added PostgreSQL-backed request idempotency for duplicate-safe payment initiation. Week 7 added Kafka topic governance, standardized transactional outbox delivery, idempotent producer configuration, retry/backoff, failed message inspection, and published-message cleanup. Week 8 adds idempotent Kafka consumers, local inbox deduplication, retry/DLQ handling, and replay runbooks.
 
 ## Current Status
 
@@ -13,7 +13,8 @@ Week 4 - Double-Entry Ledger - Complete
 Week 5 - Payment Initiation - Complete
 Week 6 - Request Idempotency - Complete
 Week 7 - Kafka & Transactional Outbox - Complete
-Week 8 - Consumer Inbox & Deduplication - Next
+Week 8 - Consumer Inbox & Deduplication - Complete
+Week 9 - Next Reliability/Platform Increment - Next
 
 ## Current Architecture
 
@@ -125,4 +126,4 @@ Privileged customer lifecycle operations require `customer.suspend` or `customer
 
 ## Engineering Principles
 
-Payment request idempotency is documented in `docs/payments/idempotency.md`. Kafka topic ownership and outbox delivery are documented in `docs/messaging/topic-catalog.md`, `docs/messaging/event-envelope.md`, and `docs/messaging/outbox.md`. Domain remains persistence-agnostic. Application orchestrates use cases. Infrastructure owns external concerns. API handles transport only. Endpoints do not call PostgreSQL, Redis, Kafka, or AWS directly. Domain events are internal; integration events are external contracts. Identity, Customer, Account, Ledger, and Payment communicate through Kafka contracts and service-boundary clients, not direct database access.
+Payment request idempotency is documented in `docs/payments/idempotency.md`. Kafka topic ownership, outbox delivery, and inbox consumer idempotency are documented in `docs/messaging/topic-catalog.md`, `docs/messaging/event-envelope.md`, `docs/messaging/outbox.md`, and `docs/messaging/inbox-pattern.md`. Domain remains persistence-agnostic. Application orchestrates use cases. Infrastructure owns external concerns. API handles transport only. Endpoints do not call PostgreSQL, Redis, Kafka, or AWS directly. Domain events are internal; integration events are external contracts. Identity, Customer, Account, Ledger, and Payment communicate through Kafka contracts and service-boundary clients, not direct database access.

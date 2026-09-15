@@ -7,7 +7,7 @@ using Payments.Ledger.Infrastructure.Persistence;
 
 namespace Payments.Ledger.Infrastructure.Messaging;
 
-public sealed class AccountLifecycleHandler
+public sealed class AccountLifecycleHandler : IIntegrationEventHandler<AccountLifecycleIntegrationEvent>
 {
     private const string LedgerAccountsTopic = "ledger.accounts.v1";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -20,7 +20,13 @@ public sealed class AccountLifecycleHandler
         _clock = clock;
     }
 
-    public async Task HandleAsync(IntegrationEventEnvelope<AccountLifecycleIntegrationEvent> envelope, CancellationToken cancellationToken = default)
+
+    public Task HandleAsync(IntegrationEventEnvelope<AccountLifecycleIntegrationEvent> envelope, CancellationToken cancellationToken = default)
+        => HandleAsync(envelope, CreateDefaultContext(envelope), cancellationToken);
+
+    private static IntegrationEventContext CreateDefaultContext(IntegrationEventEnvelope<AccountLifecycleIntegrationEvent> envelope)
+        => new(envelope.EventId, envelope.EventType, envelope.EventVersion, "direct-test", string.Empty, 0, 0, envelope.CorrelationId, envelope.CausationId, envelope.OccurredAtUtc, string.Empty);
+    public async Task HandleAsync(IntegrationEventEnvelope<AccountLifecycleIntegrationEvent> envelope, IntegrationEventContext context, CancellationToken cancellationToken = default)
     {
         if (await _dbContext.ProcessedIntegrationEvents.AnyAsync(processed => processed.EventId == envelope.EventId, cancellationToken).ConfigureAwait(false))
         {
@@ -37,7 +43,7 @@ public sealed class AccountLifecycleHandler
                 _dbContext.BalanceProjections.Add(LedgerAccountBalance.Create(account.Id, account.Currency, envelope.OccurredAtUtc));
                 _dbContext.LedgerAuditEvents.Add(LedgerAuditEvent.Create("LedgerAccountCreated", ActorType.Service, "account-service", null, account.Id, _clock.UtcNow, envelope.CorrelationId, envelope.CausationId, null, JsonSerializer.Serialize(new { sourceAccountId = envelope.Payload.AccountId, envelope.Payload.CustomerId, account.AccountCode }, SerializerOptions)));
                 var payload = new LedgerAccountCreatedIntegrationEvent(account.Id, account.ExternalReference, account.AccountCode, account.AccountType.ToString(), account.Currency.Code);
-                var outboxEnvelope = new IntegrationEventEnvelope<LedgerAccountCreatedIntegrationEvent>(Guid.NewGuid(), LedgerAccountCreatedIntegrationEvent.EventType, LedgerAccountCreatedIntegrationEvent.EventVersion, _clock.UtcNow, envelope.CorrelationId, envelope.CausationId, "ledger-service", payload);
+                var outboxEnvelope = new IntegrationEventEnvelope<LedgerAccountCreatedIntegrationEvent>(Guid.NewGuid(), LedgerAccountCreatedIntegrationEvent.EventType, LedgerAccountCreatedIntegrationEvent.EventVersion, _clock.UtcNow, envelope.CorrelationId, envelope.CausationId, "ledger-service", payload, account.Id.ToString("D"), account.Id.ToString("D"));
                 _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerAccountsTopic, account.Id.ToString("D"), outboxEnvelope.EventType, JsonSerializer.Serialize(outboxEnvelope, SerializerOptions), _clock.UtcNow, outboxEnvelope.EventId, outboxEnvelope.EventVersion, "LedgerAccount", account.Id.ToString("D")));
             }
         }

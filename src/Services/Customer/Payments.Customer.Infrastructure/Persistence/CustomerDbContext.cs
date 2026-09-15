@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Payments.BuildingBlocks.Application.Abstractions;
+using Payments.BuildingBlocks.Messaging.Events;
 using Payments.Customer.Domain.Customers;
 
 namespace Payments.Customer.Infrastructure.Persistence;
@@ -12,9 +13,11 @@ public sealed class CustomerDbContext : DbContext, IUnitOfWork
     public DbSet<ProcessedIntegrationEvent> ProcessedIntegrationEvents => Set<ProcessedIntegrationEvent>();
     public DbSet<CustomerAuditEvent> CustomerAuditEvents => Set<CustomerAuditEvent>();
     public DbSet<OutboxMessage> OutboxMessages => Set<OutboxMessage>();
+    public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.ConfigureInboxMessages();
         modelBuilder.HasDefaultSchema("customer");
         modelBuilder.Entity<Customer.Domain.Customers.Customer>(builder =>
         {

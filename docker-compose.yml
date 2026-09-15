@@ -67,7 +67,7 @@ services:
       - /bin/sh
       - -ec
       - |
-        for topic in identity.lifecycle.v1 customer.lifecycle.v1 account.lifecycle.v1 account.funds.reservation.v1 account.restriction.v1 beneficiary.lifecycle.v1 ledger.accounts.v1 ledger.transactions.v1 payments.lifecycle.v1; do
+        for topic in identity.lifecycle.v1 identity.lifecycle.v1.retry.1m customer.identity.lifecycle.v1.dlq customer.lifecycle.v1 customer.lifecycle.v1.retry.1m account.customer.lifecycle.v1.dlq account.lifecycle.v1 account.lifecycle.v1.retry.1m ledger.account.lifecycle.v1.dlq account.funds.reservation.v1 account.funds.reservation.v1.retry.1m account.funds.reservation.v1.dlq account.restriction.v1 account.restriction.v1.retry.1m account.restriction.v1.dlq beneficiary.lifecycle.v1 beneficiary.lifecycle.v1.retry.1m beneficiary.lifecycle.v1.dlq ledger.accounts.v1 ledger.accounts.v1.retry.1m ledger.accounts.v1.dlq ledger.transactions.v1 ledger.transactions.v1.retry.1m ledger.transactions.v1.dlq payments.lifecycle.v1 payments.lifecycle.v1.retry.1m payments.lifecycle.v1.dlq; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic "$${topic}" --partitions "$${KAFKA_TOPIC_PARTITIONS}" --replication-factor 1 --config retention.ms="$${KAFKA_TOPIC_RETENTION_MS}"
         done
   schema-registry:
@@ -149,6 +149,10 @@ services:
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
       CustomerConsumer__Enabled: "true"
       CustomerConsumer__Topic: identity.lifecycle.v1
+      CustomerConsumer__ConsumerName: customer.identity-user-registered-v1
+      CustomerConsumer__GroupId: customer-service-v1
+      CustomerConsumer__RetryTopics__0: identity.lifecycle.v1.retry.1m
+      CustomerConsumer__DeadLetterTopic: customer.identity.lifecycle.v1.dlq
       Outbox__PublisherEnabled: "true"
       Observability__EnableOtlpExporter: "false"
     ports:
@@ -186,6 +190,10 @@ services:
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
       AccountConsumer__Enabled: "true"
       AccountConsumer__CustomerLifecycleTopic: customer.lifecycle.v1
+      AccountConsumer__ConsumerName: account.customer-lifecycle-v1
+      AccountConsumer__GroupId: account-service-v1
+      AccountConsumer__RetryTopics__0: customer.lifecycle.v1.retry.1m
+      AccountConsumer__DeadLetterTopic: account.customer.lifecycle.v1.dlq
       Outbox__PublisherEnabled: "true"
       AccountPolicy__MaxAccountsPerCustomer: 5
       AccountPolicy__DefaultMaximumReservation: 1000000
@@ -225,6 +233,10 @@ services:
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
       LedgerConsumer__Enabled: "true"
       LedgerConsumer__AccountLifecycleTopic: account.lifecycle.v1
+      LedgerConsumer__ConsumerName: ledger.account-lifecycle-v1
+      LedgerConsumer__GroupId: ledger-service-v1
+      LedgerConsumer__RetryTopics__0: account.lifecycle.v1.retry.1m
+      LedgerConsumer__DeadLetterTopic: ledger.account.lifecycle.v1.dlq
       Outbox__PublisherEnabled: "true"
       Observability__EnableOtlpExporter: "false"
     ports:
