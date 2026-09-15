@@ -1,0 +1,20 @@
+{
+  "eventId": "55555555-5555-5555-5555-555555555555",
+  "eventType": "payment.lifecycle.changed",
+  "eventVersion": 1,
+  "occurredAtUtc": "2026-09-15T20:05:00Z",
+  "correlationId": "corr-payment-001",
+  "causationId": null,
+  "producer": "payment-service",
+  "aggregateId": "66666666-6666-6666-6666-666666666666",
+  "partitionKey": "66666666-6666-6666-6666-666666666666",
+  "payload": {
+    "paymentId": "66666666-6666-6666-6666-666666666666",
+    "customerId": "77777777-7777-7777-7777-777777777777",
+    "paymentReference": "PAY-20260915-0001",
+    "paymentType": "InternalTransfer",
+    "status": "Completed",
+    "currency": "NGN",
+    "reasonCode": null
+  }
+}

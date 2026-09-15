@@ -347,7 +347,7 @@ public sealed class LedgerService : ILedgerService
     {
         var payload = new LedgerAccountCreatedIntegrationEvent(account.Id, account.ExternalReference, account.AccountCode, account.AccountType.ToString(), account.Currency.Code);
         var envelope = new IntegrationEventEnvelope<LedgerAccountCreatedIntegrationEvent>(Guid.NewGuid(), LedgerAccountCreatedIntegrationEvent.EventType, LedgerAccountCreatedIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "ledger-service", payload);
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerAccountsTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerAccountsTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "LedgerAccount", account.Id.ToString("D")));
     }
 
     private void AddTransactionOutbox(LedgerTransaction transaction, Guid? originalTransactionId, string? reversalReason, DateTimeOffset now)
@@ -356,13 +356,13 @@ public sealed class LedgerService : ILedgerService
         {
             var payload = new LedgerTransactionPostedIntegrationEvent(transaction.Id, transaction.ExternalReference, transaction.TransactionType, transaction.Currency.Code, transaction.OccurredAtUtc);
             var envelope = new IntegrationEventEnvelope<LedgerTransactionPostedIntegrationEvent>(Guid.NewGuid(), LedgerTransactionPostedIntegrationEvent.EventType, LedgerTransactionPostedIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "ledger-service", payload);
-            _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerTransactionsTopic, transaction.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+            _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerTransactionsTopic, transaction.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "LedgerTransaction", transaction.Id.ToString("D")));
             return;
         }
 
         var reversed = new LedgerTransactionReversedIntegrationEvent(originalTransactionId.Value, transaction.Id, transaction.ExternalReference, transaction.Currency.Code, reversalReason ?? "Reversal");
         var reversedEnvelope = new IntegrationEventEnvelope<LedgerTransactionReversedIntegrationEvent>(Guid.NewGuid(), LedgerTransactionReversedIntegrationEvent.EventType, LedgerTransactionReversedIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "ledger-service", reversed);
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerTransactionsTopic, transaction.Id.ToString("D"), reversedEnvelope.EventType, JsonSerializer.Serialize(reversedEnvelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerTransactionsTopic, transaction.Id.ToString("D"), reversedEnvelope.EventType, JsonSerializer.Serialize(reversedEnvelope, SerializerOptions), now, reversedEnvelope.EventId, reversedEnvelope.EventVersion, "LedgerTransaction", transaction.Id.ToString("D")));
     }
 
     private ActorType ResolveActorType()

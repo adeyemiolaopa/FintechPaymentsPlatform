@@ -82,7 +82,7 @@ public sealed class IdentityAppService : IIdentityService
 
         _dbContext.Users.Add(user);
         _dbContext.SecurityAuditEvents.Add(SecurityAuditEvent.Create("UserRegistered", user.Id, user.Id, customerId, now, _requestContext.CorrelationId, ipAddress, userAgent));
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(Topic, user.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(Topic, user.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "User", user.Id.ToString("D")));
 
         try
         {

@@ -20,10 +20,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\..\src\BuildingBlocks\Payments.BuildingBlocks.Messaging\Payments.BuildingBlocks.Messaging.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Api\Payments.Service.Template.Api.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Application\Payments.Service.Template.Application.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Domain\Payments.Service.Template.Domain.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Infrastructure\Payments.Service.Template.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Api\Payments.Identity.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Customer\Payments.Customer.Api\Payments.Customer.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Account\Payments.Account.Api\Payments.Account.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Ledger\Payments.Ledger.Api\Payments.Ledger.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Payment\Payments.Payment.Api\Payments.Payment.Api.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Domain\Payments.Identity.Domain.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Application\Payments.Identity.Application.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Infrastructure\Payments.Identity.Infrastructure.csproj" />

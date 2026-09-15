@@ -89,12 +89,22 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
         {
             builder.ToTable("outbox_messages");
             builder.HasKey(message => message.Id);
+            builder.Property(message => message.EventId).IsRequired();
+            builder.Property(message => message.EventVersion).IsRequired();
+            builder.Property(message => message.AggregateType).HasMaxLength(80).IsRequired();
+            builder.Property(message => message.AggregateId).HasMaxLength(128).IsRequired();
             builder.Property(message => message.Topic).HasMaxLength(160).IsRequired();
             builder.Property(message => message.Key).HasMaxLength(128).IsRequired();
+            builder.Property(message => message.PartitionKey).HasMaxLength(128).IsRequired();
             builder.Property(message => message.EventType).HasMaxLength(128).IsRequired();
             builder.Property(message => message.Payload).HasColumnType("jsonb").IsRequired();
+            builder.Property(message => message.Headers).HasColumnType("jsonb").HasDefaultValue("{}");
+            builder.Property(message => message.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
             builder.Property(message => message.LastError).HasMaxLength(1024);
+            builder.HasIndex(message => message.EventId).IsUnique();
             builder.HasIndex(message => message.PublishedAtUtc);
+            builder.HasIndex(message => new { message.Status, message.NextAttemptAtUtc });
+            builder.HasIndex(message => new { message.Topic, message.PartitionKey });
         });
 
         modelBuilder.Entity<CustomerReference>(builder =>

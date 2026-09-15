@@ -559,7 +559,7 @@ public sealed class PaymentService : IPaymentService
     {
         var payload = new PaymentLifecycleIntegrationEvent(payment.Id, payment.CustomerId, payment.Reference, payment.PaymentType.ToString(), payment.Status.ToString(), payment.Currency.Code, payment.ReasonCode?.ToString());
         var envelope = new IntegrationEventEnvelope<PaymentLifecycleIntegrationEvent>(Guid.NewGuid(), PaymentLifecycleIntegrationEvent.EventType, PaymentLifecycleIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "payment-service", payload);
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(PaymentsTopic, payment.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(PaymentsTopic, payment.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "Payment", payment.Id.ToString("D")));
     }
 
     private async Task SaveAsync(CancellationToken cancellationToken)

@@ -41,7 +41,7 @@ public sealed class DependencyRuleTests
     [Fact]
     public void Api_is_the_composition_root()
     {
-        var references = typeof(Program).Assembly.GetReferencedAssemblies().Select(assembly => assembly.Name).ToArray();
+        var references = typeof(Payments.Service.Template.Api.Endpoints.ExampleEndpoints).Assembly.GetReferencedAssemblies().Select(assembly => assembly.Name).ToArray();
 
         Assert.Contains("Payments.Service.Template.Application", references);
         Assert.Contains("Payments.Service.Template.Infrastructure", references);
@@ -177,5 +177,54 @@ public sealed class DependencyRuleTests
             .GetResult();
 
         Assert.True(result.IsSuccessful, string.Join(Environment.NewLine, result.FailingTypes ?? []));
+    }
+
+    [Fact]
+    public void Domain_assemblies_do_not_reference_kafka_client()
+    {
+        var assemblies = new[]
+        {
+            typeof(Payments.Identity.Domain.Users.User).Assembly,
+            typeof(Payments.Customer.Domain.Customers.Customer).Assembly,
+            typeof(Payments.Account.Domain.Accounts.Account).Assembly,
+            typeof(Payments.Ledger.Domain.Ledger.LedgerAccount).Assembly,
+            typeof(Payments.Payment.Domain.Payments.Payment).Assembly,
+        };
+
+        foreach (var assembly in assemblies)
+        {
+            var references = assembly.GetReferencedAssemblies().Select(reference => reference.Name).ToArray();
+            Assert.DoesNotContain("Confluent.Kafka", references);
+        }
+    }
+
+    [Fact]
+    public void Api_assemblies_do_not_reference_kafka_client_directly()
+    {
+        var assemblies = new[]
+        {
+            typeof(Payments.Identity.Api.Endpoints.IdentityAuthEndpoints).Assembly,
+            typeof(Payments.Customer.Api.Endpoints.CustomerEndpoints).Assembly,
+            typeof(Payments.Account.Api.Endpoints.AccountEndpoints).Assembly,
+            typeof(Payments.Ledger.Api.Endpoints.LedgerEndpoints).Assembly,
+            typeof(Payments.Payment.Api.Endpoints.PaymentEndpoints).Assembly,
+        };
+
+        foreach (var assembly in assemblies)
+        {
+            var references = assembly.GetReferencedAssemblies().Select(reference => reference.Name).ToArray();
+            Assert.DoesNotContain("Confluent.Kafka", references);
+        }
+    }
+
+    [Fact]
+    public void Shared_messaging_building_block_owns_kafka_client_dependency()
+    {
+        var references = typeof(Payments.BuildingBlocks.Messaging.Events.KafkaEventPublisher).Assembly
+            .GetReferencedAssemblies()
+            .Select(reference => reference.Name)
+            .ToArray();
+
+        Assert.Contains("Confluent.Kafka", references);
     }
 }

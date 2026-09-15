@@ -35,7 +35,7 @@ public sealed class CustomerRepository : ICustomerRepository
     {
         var payload = new CustomerLifecycleIntegrationEvent(customer.Id, customer.Status.ToString(), customer.KycStatus.ToString());
         var envelope = new IntegrationEventEnvelope<CustomerLifecycleIntegrationEvent>(Guid.NewGuid(), CustomerLifecycleIntegrationEvent.EventType, CustomerLifecycleIntegrationEvent.EventVersion, occurredAtUtc, correlationId, causationId, "customer-service", payload);
-        AddOutbox(OutboxMessage.Create(CustomerLifecycleTopic, customer.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), occurredAtUtc));
+        AddOutbox(OutboxMessage.Create(CustomerLifecycleTopic, customer.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), occurredAtUtc, envelope.EventId, envelope.EventVersion, "Customer", customer.Id.ToString("D")));
     }
 
     public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) => _dbContext.SaveChangesAsync(cancellationToken);

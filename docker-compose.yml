@@ -45,7 +45,7 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -54,11 +54,29 @@ services:
       timeout: 10s
       retries: 12
 
+
+  kafka-topic-bootstrap:
+    image: apache/kafka:4.1.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-6}
+      KAFKA_TOPIC_RETENTION_MS: ${KAFKA_TOPIC_RETENTION_MS:-1209600000}
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        for topic in identity.lifecycle.v1 customer.lifecycle.v1 account.lifecycle.v1 account.funds.reservation.v1 account.restriction.v1 beneficiary.lifecycle.v1 ledger.accounts.v1 ledger.transactions.v1 payments.lifecycle.v1; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic "$${topic}" --partitions "$${KAFKA_TOPIC_PARTITIONS}" --replication-factor 1 --config retention.ms="$${KAFKA_TOPIC_RETENTION_MS}"
+        done
   schema-registry:
     image: confluentinc/cp-schema-registry:8.1.0
     depends_on:
       kafka:
         condition: service_healthy
+      kafka-topic-bootstrap:
+        condition: service_completed_successfully
     ports:
       - "${SCHEMA_REGISTRY_PORT:-8081}:8081"
     environment:
@@ -82,6 +100,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-topic-bootstrap:
+        condition: service_completed_successfully
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
@@ -113,6 +133,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-topic-bootstrap:
+        condition: service_completed_successfully
       identity-api:
         condition: service_healthy
     environment:
@@ -148,6 +170,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-topic-bootstrap:
+        condition: service_completed_successfully
       customer-api:
         condition: service_healthy
     environment:
@@ -185,6 +209,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-topic-bootstrap:
+        condition: service_completed_successfully
       account-api:
         condition: service_healthy
     environment:
@@ -220,6 +246,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      kafka-topic-bootstrap:
+        condition: service_completed_successfully
       account-api:
         condition: service_healthy
       ledger-api:

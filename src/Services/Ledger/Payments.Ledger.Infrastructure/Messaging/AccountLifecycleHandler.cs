@@ -38,7 +38,7 @@ public sealed class AccountLifecycleHandler
                 _dbContext.LedgerAuditEvents.Add(LedgerAuditEvent.Create("LedgerAccountCreated", ActorType.Service, "account-service", null, account.Id, _clock.UtcNow, envelope.CorrelationId, envelope.CausationId, null, JsonSerializer.Serialize(new { sourceAccountId = envelope.Payload.AccountId, envelope.Payload.CustomerId, account.AccountCode }, SerializerOptions)));
                 var payload = new LedgerAccountCreatedIntegrationEvent(account.Id, account.ExternalReference, account.AccountCode, account.AccountType.ToString(), account.Currency.Code);
                 var outboxEnvelope = new IntegrationEventEnvelope<LedgerAccountCreatedIntegrationEvent>(Guid.NewGuid(), LedgerAccountCreatedIntegrationEvent.EventType, LedgerAccountCreatedIntegrationEvent.EventVersion, _clock.UtcNow, envelope.CorrelationId, envelope.CausationId, "ledger-service", payload);
-                _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerAccountsTopic, account.Id.ToString("D"), outboxEnvelope.EventType, JsonSerializer.Serialize(outboxEnvelope, SerializerOptions), _clock.UtcNow));
+                _dbContext.OutboxMessages.Add(OutboxMessage.Create(LedgerAccountsTopic, account.Id.ToString("D"), outboxEnvelope.EventType, JsonSerializer.Serialize(outboxEnvelope, SerializerOptions), _clock.UtcNow, outboxEnvelope.EventId, outboxEnvelope.EventVersion, "LedgerAccount", account.Id.ToString("D")));
             }
         }
 

@@ -298,25 +298,61 @@ namespace Payments.Ledger.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AggregateId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("AggregateType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
                     b.Property<int>("AttemptCount")
                         .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("EventId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("EventType")
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
+                    b.Property<int>("EventVersion")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Headers")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("jsonb")
+                        .HasDefaultValue("{}");
+
                     b.Property<string>("Key")
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
 
+                    b.Property<DateTimeOffset?>("LastAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("LastError")
                         .HasMaxLength(1024)
                         .HasColumnType("character varying(1024)");
 
+                    b.Property<DateTimeOffset?>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTimeOffset>("OccurredAtUtc")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PartitionKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
 
                     b.Property<string>("Payload")
                         .IsRequired()
@@ -325,6 +361,11 @@ namespace Payments.Ledger.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("PublishedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
                     b.Property<string>("Topic")
                         .IsRequired()
                         .HasMaxLength(160)
@@ -332,7 +373,14 @@ namespace Payments.Ledger.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("EventId")
+                        .IsUnique();
+
                     b.HasIndex("PublishedAtUtc");
+
+                    b.HasIndex("Status", "NextAttemptAtUtc");
+
+                    b.HasIndex("Topic", "PartitionKey");
 
                     b.ToTable("outbox_messages", "ledger");
                 });

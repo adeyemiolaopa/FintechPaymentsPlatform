@@ -1,0 +1,17 @@
+{
+  "eventId": "11111111-1111-1111-1111-111111111111",
+  "eventType": "identity.user.registered",
+  "eventVersion": 1,
+  "occurredAtUtc": "2026-09-15T20:00:00Z",
+  "correlationId": "corr-identity-001",
+  "causationId": null,
+  "producer": "identity-service",
+  "aggregateId": "33333333-3333-3333-3333-333333333333",
+  "partitionKey": "33333333-3333-3333-3333-333333333333",
+  "payload": {
+    "userId": "33333333-3333-3333-3333-333333333333",
+    "customerId": "44444444-4444-4444-4444-444444444444",
+    "email": "user@example.com",
+    "phoneNumber": "+2348012345678"
+  }
+}

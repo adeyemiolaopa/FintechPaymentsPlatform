@@ -242,43 +242,90 @@ public sealed class RefreshToken
     }
 }
 
+public enum OutboxMessageStatus { Pending = 0, Publishing = 1, Published = 2, Failed = 3 }
+
 public sealed class OutboxMessage
 {
     private OutboxMessage() { }
 
-    private OutboxMessage(string topic, string key, string eventType, string payload, DateTimeOffset now)
+    private OutboxMessage(string topic, string key, string eventType, string payload, DateTimeOffset occurredAtUtc, Guid? eventId, int eventVersion, string? aggregateType, string? aggregateId, string? headers)
     {
         Id = Guid.NewGuid();
+        EventId = eventId ?? Guid.NewGuid();
+        EventVersion = eventVersion;
+        AggregateType = string.IsNullOrWhiteSpace(aggregateType) ? InferAggregateType(topic) : aggregateType.Trim();
+        AggregateId = string.IsNullOrWhiteSpace(aggregateId) ? key : aggregateId.Trim();
         Topic = topic;
         Key = key;
+        PartitionKey = key;
         EventType = eventType;
         Payload = payload;
-        OccurredAtUtc = now;
+        Headers = string.IsNullOrWhiteSpace(headers) ? "{}" : headers;
+        Status = OutboxMessageStatus.Pending;
+        OccurredAtUtc = occurredAtUtc;
+        CreatedAtUtc = occurredAtUtc;
+        NextAttemptAtUtc = occurredAtUtc;
     }
 
     public Guid Id { get; private set; }
+    public Guid EventId { get; private set; }
+    public string EventType { get; private set; } = string.Empty;
+    public int EventVersion { get; private set; }
+    public string AggregateType { get; private set; } = string.Empty;
+    public string AggregateId { get; private set; } = string.Empty;
     public string Topic { get; private set; } = string.Empty;
     public string Key { get; private set; } = string.Empty;
-    public string EventType { get; private set; } = string.Empty;
+    public string PartitionKey { get; private set; } = string.Empty;
     public string Payload { get; private set; } = string.Empty;
+    public string Headers { get; private set; } = "{}";
+    public OutboxMessageStatus Status { get; private set; }
     public DateTimeOffset OccurredAtUtc { get; private set; }
+    public DateTimeOffset CreatedAtUtc { get; private set; }
     public DateTimeOffset? PublishedAtUtc { get; private set; }
-    public int FailureCount { get; private set; }
+    public int AttemptCount { get; private set; }
+    public DateTimeOffset? NextAttemptAtUtc { get; private set; }
+    public DateTimeOffset? LastAttemptAtUtc { get; private set; }
     public string? LastError { get; private set; }
 
-    public static OutboxMessage Create(string topic, string key, string eventType, string payload, DateTimeOffset now)
-        => new(topic, key, eventType, payload, now);
+    public static OutboxMessage Create(string topic, string key, string eventType, string payload, DateTimeOffset occurredAtUtc, Guid? eventId = null, int eventVersion = 1, string? aggregateType = null, string? aggregateId = null, string? headers = null)
+        => new(topic, key, eventType, payload, occurredAtUtc, eventId, eventVersion, aggregateType, aggregateId, headers);
 
     public void MarkPublished(DateTimeOffset now)
     {
+        Status = OutboxMessageStatus.Published;
         PublishedAtUtc = now;
+        LastAttemptAtUtc = now;
+        NextAttemptAtUtc = null;
         LastError = null;
     }
 
-    public void MarkFailed(string error)
+    public void MarkFailed(string error, DateTimeOffset now, int maxAttempts, TimeSpan retryDelay)
     {
-        FailureCount++;
-        LastError = error.Length > 512 ? error[..512] : error;
+        AttemptCount++;
+        LastAttemptAtUtc = now;
+        LastError = error.Length > 1024 ? error[..1024] : error;
+        if (AttemptCount >= maxAttempts)
+        {
+            Status = OutboxMessageStatus.Failed;
+            NextAttemptAtUtc = null;
+            return;
+        }
+
+        Status = OutboxMessageStatus.Pending;
+        NextAttemptAtUtc = now.Add(retryDelay);
+    }
+
+    public void ScheduleRetry(DateTimeOffset now)
+    {
+        Status = OutboxMessageStatus.Pending;
+        NextAttemptAtUtc = now;
+    }
+
+    private static string InferAggregateType(string topic)
+    {
+        if (string.IsNullOrWhiteSpace(topic)) return "Unknown";
+        var firstSegment = topic.Split('.', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        return string.IsNullOrWhiteSpace(firstSegment) ? "Unknown" : firstSegment;
     }
 }
 

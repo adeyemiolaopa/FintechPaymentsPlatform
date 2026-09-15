@@ -312,19 +312,19 @@ public sealed class AccountService : IAccountService
     private void AddAccountOutbox(Domain.Accounts.Account account, string status, string? reason, DateTimeOffset now)
     {
         var envelope = new IntegrationEventEnvelope<AccountLifecycleIntegrationEvent>(Guid.NewGuid(), AccountLifecycleIntegrationEvent.EventType, AccountLifecycleIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "account-service", new AccountLifecycleIntegrationEvent(account.Id, account.CustomerId, account.Currency.Code, account.AccountType.ToString(), status, reason));
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(AccountTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(AccountTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "Account", account.Id.ToString("D")));
     }
 
     private void AddReservationOutbox(Domain.Accounts.Account account, FundsReservation reservation, string status, DateTimeOffset now)
     {
         var envelope = new IntegrationEventEnvelope<FundsReservationIntegrationEvent>(Guid.NewGuid(), FundsReservationIntegrationEvent.EventType, FundsReservationIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "account-service", new FundsReservationIntegrationEvent(account.Id, account.CustomerId, reservation.Id, reservation.ReferenceId, reservation.Amount, reservation.Currency.Code, status));
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(AccountTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(AccountTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "Account", account.Id.ToString("D")));
     }
 
     private void AddRestrictionOutbox(Domain.Accounts.Account account, AccountRestriction restriction, string status, string? reason, DateTimeOffset now)
     {
         var envelope = new IntegrationEventEnvelope<AccountRestrictionIntegrationEvent>(Guid.NewGuid(), AccountRestrictionIntegrationEvent.EventType, AccountRestrictionIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "account-service", new AccountRestrictionIntegrationEvent(account.Id, account.CustomerId, restriction.Id, restriction.RestrictionType.ToString(), status, reason));
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(AccountTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(AccountTopic, account.Id.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "Account", account.Id.ToString("D")));
     }
 
     private static AccountResponse Map(Domain.Accounts.Account account) => new(account.Id, account.CustomerId, Mask(account.AccountNumber.Value), account.AccountName, account.Currency.Code, account.AccountType.ToString(), account.Status.ToString(), account.CreatedAtUtc, account.ClosedAtUtc);

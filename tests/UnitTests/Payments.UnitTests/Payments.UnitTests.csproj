@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Confluent.Kafka" />
     <PackageReference Include="coverlet.collector" />
     <PackageReference Include="FluentAssertions" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
@@ -22,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\BuildingBlocks\Payments.BuildingBlocks.Domain\Payments.BuildingBlocks.Domain.csproj" />
     <ProjectReference Include="..\..\..\src\BuildingBlocks\Payments.BuildingBlocks.Application\Payments.BuildingBlocks.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\BuildingBlocks\Payments.BuildingBlocks.Messaging\Payments.BuildingBlocks.Messaging.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Domain\Payments.Service.Template.Domain.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Application\Payments.Service.Template.Application.csproj" />
   </ItemGroup>

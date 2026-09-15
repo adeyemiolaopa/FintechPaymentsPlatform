@@ -93,7 +93,7 @@ public sealed class BeneficiaryService : IBeneficiaryService
     private void AddOutbox(Beneficiary beneficiary, string status, DateTimeOffset now)
     {
         var envelope = new IntegrationEventEnvelope<BeneficiaryLifecycleIntegrationEvent>(Guid.NewGuid(), BeneficiaryLifecycleIntegrationEvent.EventType, BeneficiaryLifecycleIntegrationEvent.EventVersion, now, _requestContext.CorrelationId, _requestContext.CausationId, "account-service", new BeneficiaryLifecycleIntegrationEvent(beneficiary.Id, beneficiary.CustomerId, beneficiary.Type.ToString(), status, beneficiary.Currency.Code, beneficiary.CountryCode));
-        _dbContext.OutboxMessages.Add(OutboxMessage.Create(BeneficiaryTopic, beneficiary.CustomerId.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now));
+        _dbContext.OutboxMessages.Add(OutboxMessage.Create(BeneficiaryTopic, beneficiary.CustomerId.ToString("D"), envelope.EventType, JsonSerializer.Serialize(envelope, SerializerOptions), now, envelope.EventId, envelope.EventVersion, "Beneficiary", beneficiary.Id.ToString("D")));
     }
 
     private Guid RequireCustomerId() => Guid.TryParse(_currentUser.CustomerId, out var customerId) ? customerId : throw new UnauthorizedApplicationException();

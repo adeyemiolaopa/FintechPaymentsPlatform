@@ -100,12 +100,22 @@ public sealed class IdentityDbContext : DbContext, IUnitOfWork
         {
             builder.ToTable("outbox_messages");
             builder.HasKey(outbox => outbox.Id);
-            builder.Property(outbox => outbox.Topic).HasMaxLength(128).IsRequired();
-            builder.Property(outbox => outbox.Key).HasMaxLength(128).IsRequired();
+            builder.Property(message => message.EventId).IsRequired();
+            builder.Property(message => message.EventVersion).IsRequired();
+            builder.Property(message => message.AggregateType).HasMaxLength(80).IsRequired();
+            builder.Property(message => message.AggregateId).HasMaxLength(128).IsRequired();
+            builder.Property(message => message.Topic).HasMaxLength(160).IsRequired();
+            builder.Property(message => message.Key).HasMaxLength(128).IsRequired();
+            builder.Property(message => message.PartitionKey).HasMaxLength(128).IsRequired();
             builder.Property(outbox => outbox.EventType).HasMaxLength(128).IsRequired();
-            builder.Property(outbox => outbox.Payload).HasColumnType("jsonb").IsRequired();
+            builder.Property(message => message.Payload).HasColumnType("jsonb").IsRequired();
+            builder.Property(message => message.Headers).HasColumnType("jsonb").HasDefaultValue("{}");
+            builder.Property(message => message.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
             builder.Property(outbox => outbox.LastError).HasMaxLength(512);
-            builder.HasIndex(outbox => outbox.PublishedAtUtc);
+            builder.HasIndex(message => message.EventId).IsUnique();
+            builder.HasIndex(message => message.PublishedAtUtc);
+            builder.HasIndex(message => new { message.Status, message.NextAttemptAtUtc });
+            builder.HasIndex(message => new { message.Topic, message.PartitionKey });
             builder.HasIndex(outbox => outbox.EventType);
         });
     }
