@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+TestResults/
+.git/
+.vs/
+.idea/
+.vscode/
+*.user
+*.suo
+.env
+*.trx
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*

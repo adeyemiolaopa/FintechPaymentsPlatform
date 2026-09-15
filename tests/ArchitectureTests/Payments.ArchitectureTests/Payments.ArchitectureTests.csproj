@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="NetArchTest.Rules" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Api\Payments.Service.Template.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Application\Payments.Service.Template.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Domain\Payments.Service.Template.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Payments.Service.Template\Payments.Service.Template.Infrastructure\Payments.Service.Template.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Domain\Payments.Identity.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Application\Payments.Identity.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Identity\Payments.Identity.Infrastructure\Payments.Identity.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Customer\Payments.Customer.Domain\Payments.Customer.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Customer\Payments.Customer.Application\Payments.Customer.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Customer\Payments.Customer.Infrastructure\Payments.Customer.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Account\Payments.Account.Domain\Payments.Account.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Account\Payments.Account.Application\Payments.Account.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Account\Payments.Account.Infrastructure\Payments.Account.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Ledger\Payments.Ledger.Domain\Payments.Ledger.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Ledger\Payments.Ledger.Application\Payments.Ledger.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Ledger\Payments.Ledger.Infrastructure\Payments.Ledger.Infrastructure.csproj" />
+  </ItemGroup>
+
+</Project>

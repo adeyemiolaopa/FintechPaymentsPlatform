@@ -1,0 +1,12 @@
+bin/
+obj/
+.vs/
+.idea/
+.vscode/
+TestResults/
+coverage/
+*.user
+*.suo
+*.log
+.env
+docker-compose.override.yml

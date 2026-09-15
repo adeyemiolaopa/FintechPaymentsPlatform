@@ -1,0 +1,3 @@
+dotnet clean FintechPaymentsPlatform.sln
+
+

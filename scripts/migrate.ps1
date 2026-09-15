@@ -1,0 +1,1 @@
+dotnet ef database update --project src/Services/Payments.Service.Template/Payments.Service.Template.Infrastructure --startup-project src/Services/Payments.Service.Template/Payments.Service.Template.Api

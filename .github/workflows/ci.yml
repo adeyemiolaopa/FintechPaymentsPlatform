@@ -1,0 +1,38 @@
+name: pull-request-ci
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore FintechPaymentsPlatform.sln
+      - run: dotnet format FintechPaymentsPlatform.sln --verify-no-changes --no-restore
+      - run: dotnet build FintechPaymentsPlatform.sln --configuration Release --no-restore
+      - run: dotnet test FintechPaymentsPlatform.sln --configuration Release --no-build --logger trx --results-directory TestResults/solution
+      - run: docker build -f deploy/docker/Dockerfile.identity -t payments-identity-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile.customer -t payments-customer-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile.account -t payments-account-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile.ledger -t payments-ledger-api:ci .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: TestResults/**/*.trx
+
+  dependency-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet restore FintechPaymentsPlatform.sln
+      - run: dotnet list FintechPaymentsPlatform.sln package --vulnerable --include-transitive

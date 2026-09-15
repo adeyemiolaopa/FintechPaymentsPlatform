@@ -1,0 +1,214 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-payments_identity}
+      POSTGRES_USER: ${POSTGRES_USER:-payments}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-local-only}
+    ports:
+      - "${POSTGRES_PORT:-15432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - ./deploy/docker/postgres/init-databases.sql:/docker-entrypoint-initdb.d/10-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:4.1.1
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.1.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "${SCHEMA_REGISTRY_PORT:-8081}:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/subjects >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  identity-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.identity
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      IdentityDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_identity;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      Redis__ConnectionString: redis:6379
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ProducerName: identity-service
+      Jwt__Issuer: FintechPaymentsPlatform
+      Jwt__Audience: FintechPaymentsPlatform.Api
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      Outbox__PublisherEnabled: "true"
+      Observability__EnableOtlpExporter: "false"
+    ports:
+      - "${IDENTITY_API_PORT:-5101}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  customer-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.customer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      identity-api:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      CustomerDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_customer;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      Redis__ConnectionString: redis:6379
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ProducerName: customer-service
+      Jwt__Issuer: FintechPaymentsPlatform
+      Jwt__Audience: FintechPaymentsPlatform.Api
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      CustomerConsumer__Enabled: "true"
+      CustomerConsumer__Topic: identity.lifecycle.v1
+      Outbox__PublisherEnabled: "true"
+      Observability__EnableOtlpExporter: "false"
+    ports:
+      - "${CUSTOMER_API_PORT:-5103}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  account-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.account
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      customer-api:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      AccountDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_account;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      Redis__ConnectionString: redis:6379
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ProducerName: account-service
+      Jwt__Issuer: FintechPaymentsPlatform
+      Jwt__Audience: FintechPaymentsPlatform.Api
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      AccountConsumer__Enabled: "true"
+      AccountConsumer__CustomerLifecycleTopic: customer.lifecycle.v1
+      Outbox__PublisherEnabled: "true"
+      AccountPolicy__MaxAccountsPerCustomer: 5
+      AccountPolicy__DefaultMaximumReservation: 1000000
+      Observability__EnableOtlpExporter: "false"
+    ports:
+      - "${ACCOUNT_API_PORT:-5104}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ledger-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.ledger
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      account-api:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      LedgerDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_ledger;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      Redis__ConnectionString: redis:6379
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ProducerName: ledger-service
+      Jwt__Issuer: FintechPaymentsPlatform
+      Jwt__Audience: FintechPaymentsPlatform.Api
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      LedgerConsumer__Enabled: "true"
+      LedgerConsumer__AccountLifecycleTopic: account.lifecycle.v1
+      Outbox__PublisherEnabled: "true"
+      Observability__EnableOtlpExporter: "false"
+    ports:
+      - "${LEDGER_API_PORT:-5105}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+volumes:
+  postgres-data:
+  redis-data:
+  kafka-data:

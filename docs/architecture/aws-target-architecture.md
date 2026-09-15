@@ -1,0 +1,5 @@
+# AWS Target Architecture
+
+No AWS resources are provisioned in Week 1. The target mapping is Kubernetes to Amazon EKS, PostgreSQL to Amazon RDS PostgreSQL, Kafka to Amazon MSK, Redis to Amazon ElastiCache, container registry to Amazon ECR, secrets to AWS Secrets Manager, encryption keys to AWS KMS, logs and metrics to Amazon CloudWatch, object storage to Amazon S3, DNS to Amazon Route 53, and ingress to an Application Load Balancer.
+
+The target network uses public subnets only for load balancers and private subnets for workloads and data services. Production should be Multi-AZ, encrypted in transit and at rest, and governed through least-privilege IAM. Service-to-service authentication should use a workload identity and mTLS or signed service tokens. Application code should consume secrets through abstractions so AWS Secrets Manager can replace local configuration without rewriting use cases.

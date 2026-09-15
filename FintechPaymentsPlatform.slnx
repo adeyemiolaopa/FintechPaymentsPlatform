@@ -1,0 +1,65 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/BuildingBlocks/">
+    <Project Path="src/BuildingBlocks/Payments.BuildingBlocks.Application/Payments.BuildingBlocks.Application.csproj" />
+    <Project Path="src/BuildingBlocks/Payments.BuildingBlocks.Domain/Payments.BuildingBlocks.Domain.csproj" />
+    <Project Path="src/BuildingBlocks/Payments.BuildingBlocks.Infrastructure/Payments.BuildingBlocks.Infrastructure.csproj" />
+    <Project Path="src/BuildingBlocks/Payments.BuildingBlocks.Messaging/Payments.BuildingBlocks.Messaging.csproj" />
+    <Project Path="src/BuildingBlocks/Payments.BuildingBlocks.Observability/Payments.BuildingBlocks.Observability.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Identity/">
+    <Project Path="src/Services/Identity/Payments.Identity.Api/Payments.Identity.Api.csproj" />
+    <Project Path="src/Services/Identity/Payments.Identity.Application/Payments.Identity.Application.csproj" />
+    <Project Path="src/Services/Identity/Payments.Identity.Domain/Payments.Identity.Domain.csproj" />
+    <Project Path="src/Services/Identity/Payments.Identity.Infrastructure/Payments.Identity.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Customer/">
+    <Project Path="src/Services/Customer/Payments.Customer.Api/Payments.Customer.Api.csproj" />
+    <Project Path="src/Services/Customer/Payments.Customer.Application/Payments.Customer.Application.csproj" />
+    <Project Path="src/Services/Customer/Payments.Customer.Domain/Payments.Customer.Domain.csproj" />
+    <Project Path="src/Services/Customer/Payments.Customer.Infrastructure/Payments.Customer.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Account/">
+    <Project Path="src/Services/Account/Payments.Account.Api/Payments.Account.Api.csproj" />
+    <Project Path="src/Services/Account/Payments.Account.Application/Payments.Account.Application.csproj" />
+    <Project Path="src/Services/Account/Payments.Account.Domain/Payments.Account.Domain.csproj" />
+    <Project Path="src/Services/Account/Payments.Account.Infrastructure/Payments.Account.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Ledger/">
+    <Project Path="src/Services/Ledger/Payments.Ledger.Api/Payments.Ledger.Api.csproj" />
+    <Project Path="src/Services/Ledger/Payments.Ledger.Application/Payments.Ledger.Application.csproj" />
+    <Project Path="src/Services/Ledger/Payments.Ledger.Domain/Payments.Ledger.Domain.csproj" />
+    <Project Path="src/Services/Ledger/Payments.Ledger.Infrastructure/Payments.Ledger.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/Services/Payments.Service.Template/">
+    <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Api/Payments.Service.Template.Api.csproj" />
+    <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Application/Payments.Service.Template.Application.csproj" />
+    <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Domain/Payments.Service.Template.Domain.csproj" />
+    <Project Path="src/Services/Payments.Service.Template/Payments.Service.Template.Infrastructure/Payments.Service.Template.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/ArchitectureTests/">
+    <Project Path="tests/ArchitectureTests/Payments.ArchitectureTests/Payments.ArchitectureTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Identity/">
+    <Project Path="tests/Identity/Payments.Identity.UnitTests/Payments.Identity.UnitTests.csproj" />
+    <Project Path="tests/Identity/Payments.Identity.IntegrationTests/Payments.Identity.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Customer/">
+    <Project Path="tests/Customer/Payments.Customer.UnitTests/Payments.Customer.UnitTests.csproj" />
+    <Project Path="tests/Customer/Payments.Customer.IntegrationTests/Payments.Customer.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Account/">
+    <Project Path="tests/Account/Payments.Account.UnitTests/Payments.Account.UnitTests.csproj" />
+    <Project Path="tests/Account/Payments.Account.IntegrationTests/Payments.Account.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Ledger/">
+    <Project Path="tests/Ledger/Payments.Ledger.UnitTests/Payments.Ledger.UnitTests.csproj" />
+    <Project Path="tests/Ledger/Payments.Ledger.IntegrationTests/Payments.Ledger.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/IntegrationTests/">
+    <Project Path="tests/IntegrationTests/Payments.IntegrationTests/Payments.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tests/UnitTests/">
+    <Project Path="tests/UnitTests/Payments.UnitTests/Payments.UnitTests.csproj" />
+  </Folder>
+</Solution>
