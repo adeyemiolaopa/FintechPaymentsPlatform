@@ -67,7 +67,7 @@ services:
       - /bin/sh
       - -ec
       - |
-        for topic in identity.lifecycle.v1 identity.lifecycle.v1.retry.1m customer.identity.lifecycle.v1.dlq customer.lifecycle.v1 customer.lifecycle.v1.retry.1m account.customer.lifecycle.v1.dlq account.lifecycle.v1 account.lifecycle.v1.retry.1m ledger.account.lifecycle.v1.dlq account.funds.reservation.v1 account.funds.reservation.v1.retry.1m account.funds.reservation.v1.dlq account.restriction.v1 account.restriction.v1.retry.1m account.restriction.v1.dlq beneficiary.lifecycle.v1 beneficiary.lifecycle.v1.retry.1m beneficiary.lifecycle.v1.dlq ledger.accounts.v1 ledger.accounts.v1.retry.1m ledger.accounts.v1.dlq ledger.transactions.v1 ledger.transactions.v1.retry.1m ledger.transactions.v1.dlq payments.lifecycle.v1 payments.lifecycle.v1.retry.1m payments.lifecycle.v1.dlq; do
+        for topic in identity.lifecycle.v1 identity.lifecycle.v1.retry.1m customer.identity.lifecycle.v1.dlq customer.lifecycle.v1 customer.lifecycle.v1.retry.1m account.customer.lifecycle.v1.dlq account.lifecycle.v1 account.lifecycle.v1.retry.1m ledger.account.lifecycle.v1.dlq account.funds.reservation.v1 account.funds.reservation.v1.retry.1m account.funds.reservation.v1.dlq account.restriction.v1 account.restriction.v1.retry.1m account.restriction.v1.dlq beneficiary.lifecycle.v1 beneficiary.lifecycle.v1.retry.1m beneficiary.lifecycle.v1.dlq ledger.accounts.v1 ledger.accounts.v1.retry.1m ledger.accounts.v1.dlq ledger.transactions.v1 ledger.transactions.v1.retry.1m ledger.transactions.v1.dlq payments.lifecycle.v1 payments.lifecycle.v1.retry.1m payments.lifecycle.v1.dlq reconciliation.payment.lifecycle.v1.dlq reconciliation.ledger.transactions.v1.dlq reconciliation.lifecycle.v1; do
           /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:29092 --create --if-not-exists --topic "$${topic}" --partitions "$${KAFKA_TOPIC_PARTITIONS}" --replication-factor 1 --config retention.ms="$${KAFKA_TOPIC_RETENTION_MS}"
         done
   schema-registry:
@@ -225,6 +225,7 @@ services:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       LedgerDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_ledger;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      InternalReconciliation__SharedKey: ${RECONCILIATION_INTERNAL_KEY:-local-reconciliation-key-change-me}
       Redis__ConnectionString: redis:6379
       Kafka__BootstrapServers: kafka:29092
       Kafka__ProducerName: ledger-service
@@ -264,10 +265,13 @@ services:
         condition: service_healthy
       ledger-api:
         condition: service_healthy
+      rail-simulator-api:
+        condition: service_healthy
     environment:
       ASPNETCORE_ENVIRONMENT: Development
       ASPNETCORE_URLS: http://+:8080
       PaymentDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_payment;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      InternalReconciliation__SharedKey: ${RECONCILIATION_INTERNAL_KEY:-local-reconciliation-key-change-me}
       Redis__ConnectionString: redis:6379
       Kafka__BootstrapServers: kafka:29092
       Kafka__ProducerName: payment-service
@@ -276,6 +280,24 @@ services:
       Jwt__SigningKey: ${JWT_SIGNING_KEY}
       DownstreamServices__AccountBaseUrl: http://account-api:8080
       DownstreamServices__LedgerBaseUrl: http://ledger-api:8080
+      ExternalTransfers__DefaultClearingLedgerAccountId: ${EXTERNAL_TRANSFER_CLEARING_LEDGER_ACCOUNT_ID:-00000000-0000-0000-0000-000000000000}
+      ExternalTransfers__PendingStatusBackoffSeconds: 60
+      ExternalTransfers__AmbiguousStatusBackoffSeconds: 120
+      ExternalTransfers__CircuitBreakerFailureThreshold: 3
+      ExternalTransfers__CircuitBreakerOpenSeconds: 30
+      ExternalTransfers__Providers__0__ProviderName: SimulatorRail
+      ExternalTransfers__Providers__0__Market: NG
+      ExternalTransfers__Providers__0__Currency: NGN
+      ExternalTransfers__Providers__0__SupportedPaymentType: ExternalBankTransfer
+      ExternalTransfers__Providers__0__Priority: 1
+      ExternalTransfers__Providers__0__Enabled: "true"
+      ExternalTransfers__Providers__0__BaseUrl: http://rail-simulator-api:8080
+      ExternalTransfers__Providers__0__ClientId: ${RAIL_SIMULATOR_CLIENT_ID:-fintech-platform}
+      ExternalTransfers__Providers__0__ApiKey: ${RAIL_SIMULATOR_API_KEY:-local-rail-api-key}
+      ExternalTransfers__Providers__0__ClientSecret: ${RAIL_SIMULATOR_CLIENT_SECRET:-local-rail-client-secret}
+      ExternalTransfers__Providers__0__WebhookSecret: ${RAIL_SIMULATOR_WEBHOOK_SECRET:-local-webhook-secret}
+      ExternalTransfers__Providers__0__TimeoutSeconds: 5
+      ExternalTransfers__Providers__0__MaxConcurrency: 50
       Outbox__PublisherEnabled: "true"
       PaymentRecovery__Enabled: "true"
       PaymentIdempotency__RetentionDays: ${PAYMENT_IDEMPOTENCY_RETENTION_DAYS:-7}
@@ -291,7 +313,72 @@ services:
       timeout: 5s
       retries: 10
 
+  reconciliation-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.reconciliation
+    depends_on:
+      postgres:
+        condition: service_healthy
+      payment-api:
+        condition: service_healthy
+      ledger-api:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      Reconciliation__ConnectionString: Host=postgres;Port=5432;Database=payments_reconciliation;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      Reconciliation__FileStorePath: /data/settlement-files
+      Reconciliation__BatchSize: 100
+      ReconciliationSources__PaymentBaseUrl: http://payment-api:8080
+      ReconciliationSources__LedgerBaseUrl: http://ledger-api:8080
+      ReconciliationSources__SharedKey: ${RECONCILIATION_INTERNAL_KEY:-local-reconciliation-key-change-me}
+      Kafka__BootstrapServers: kafka:29092
+      Kafka__ProducerName: reconciliation-service
+      Outbox__Enabled: "true"
+      Observability__ServiceName: payments-reconciliation-api
+      Observability__EnableOtlpExporter: "false"
+      Jwt__Issuer: FintechPaymentsPlatform
+      Jwt__Audience: FintechPaymentsPlatform.Api
+      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+    volumes:
+      - reconciliation-files:/data/settlement-files
+    ports:
+      - "${RECONCILIATION_API_PORT:-5107}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rail-simulator-api:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile.rail-simulator
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      RailSimulatorDatabase__ConnectionString: Host=postgres;Port=5432;Database=payments_rail_simulator;Username=${POSTGRES_USER:-payments};Password=${POSTGRES_PASSWORD:-change-me-local-only}
+      RailSimulator__DefaultClientId: ${RAIL_SIMULATOR_CLIENT_ID:-fintech-platform}
+      RailSimulator__DefaultApiKey: ${RAIL_SIMULATOR_API_KEY:-local-rail-api-key}
+      RailSimulator__DefaultClientSecret: ${RAIL_SIMULATOR_CLIENT_SECRET:-local-rail-client-secret}
+      RailSimulator__AdminApiKey: ${RAIL_SIMULATOR_ADMIN_API_KEY:-local-rail-admin-key}
+      RailSimulator__RequireRequestSignature: "true"
+      RailSimulator__WorkerIntervalMs: 500
+      RailSimulator__CallbackTimeoutSeconds: 5
+    ports:
+      - "${RAIL_SIMULATOR_API_PORT:-5110}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health/live >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
 volumes:
   postgres-data:
   redis-data:
   kafka-data:
+  reconciliation-files:

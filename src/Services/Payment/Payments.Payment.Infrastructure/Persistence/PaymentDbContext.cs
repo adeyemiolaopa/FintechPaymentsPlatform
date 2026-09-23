@@ -19,6 +19,9 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
     public DbSet<ProcessedIntegrationEvent> ProcessedIntegrationEvents => Set<ProcessedIntegrationEvent>();
     public DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
     public DbSet<InboxMessage> InboxMessages => Set<InboxMessage>();
+    public DbSet<RailSubmission> RailSubmissions => Set<RailSubmission>();
+    public DbSet<RailSubmissionAttempt> RailSubmissionAttempts => Set<RailSubmissionAttempt>();
+    public DbSet<RailCallbackInbox> RailCallbackInboxes => Set<RailCallbackInbox>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -40,6 +43,7 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
             builder.Property(payment => payment.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
             builder.Property(payment => payment.CorrelationId).HasMaxLength(64).IsRequired();
             builder.Property(payment => payment.ExternalReference).HasMaxLength(128).IsRequired();
+            builder.Property(payment => payment.ReversalReason).HasMaxLength(240);
             builder.Property(payment => payment.ReasonCode).HasConversion<string>().HasMaxLength(80);
             builder.Property(payment => payment.ReasonDescription).HasMaxLength(240);
             builder.Property(payment => payment.Version).IsRequired();
@@ -144,6 +148,62 @@ public sealed class PaymentDbContext : DbContext, IUnitOfWork
             builder.HasIndex(record => new { record.Status, record.UpdatedAtUtc });
             builder.HasIndex(record => record.ExpiresAtUtc);
             builder.HasIndex(record => record.ResourceId);
+        });
+
+        modelBuilder.Entity<RailSubmission>(builder =>
+        {
+            builder.ToTable("rail_submissions");
+            builder.HasKey(submission => submission.Id);
+            builder.Property(submission => submission.Provider).HasMaxLength(80).IsRequired();
+            builder.Property(submission => submission.Market).HasMaxLength(16).IsRequired();
+            builder.Property(submission => submission.Currency).HasMaxLength(3).IsRequired();
+            builder.Property(submission => submission.ClientReference).HasMaxLength(128).IsRequired();
+            builder.Property(submission => submission.ProviderReference).HasMaxLength(128);
+            builder.Property(submission => submission.InstructionHash).HasMaxLength(128).IsRequired();
+            builder.Property(submission => submission.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
+            builder.Property(submission => submission.Outcome).HasConversion<string>().HasMaxLength(40).IsRequired();
+            builder.Property(submission => submission.ResponseCode).HasMaxLength(64);
+            builder.Property(submission => submission.ProviderMessage).HasMaxLength(512);
+            builder.Property(submission => submission.FailureCategory).HasMaxLength(80);
+            builder.Property(submission => submission.RawStatus).HasMaxLength(80);
+            builder.HasIndex(submission => submission.PaymentId).IsUnique();
+            builder.HasIndex(submission => new { submission.Provider, submission.ClientReference }).IsUnique();
+            builder.HasIndex(submission => new { submission.Provider, submission.ProviderReference }).IsUnique().HasFilter("\"ProviderReference\" IS NOT NULL");
+            builder.HasIndex(submission => new { submission.Status, submission.NextStatusCheckAtUtc });
+        });
+
+        modelBuilder.Entity<RailSubmissionAttempt>(builder =>
+        {
+            builder.ToTable("rail_submission_attempts");
+            builder.HasKey(attempt => attempt.Id);
+            builder.Property(attempt => attempt.Provider).HasMaxLength(80).IsRequired();
+            builder.Property(attempt => attempt.ClientReference).HasMaxLength(128).IsRequired();
+            builder.Property(attempt => attempt.ProviderReference).HasMaxLength(128);
+            builder.Property(attempt => attempt.Outcome).HasConversion<string>().HasMaxLength(40).IsRequired();
+            builder.Property(attempt => attempt.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
+            builder.Property(attempt => attempt.ResponseCode).HasMaxLength(64);
+            builder.Property(attempt => attempt.ProviderMessage).HasMaxLength(512);
+            builder.Property(attempt => attempt.RawStatus).HasMaxLength(80);
+            builder.Property(attempt => attempt.Error).HasMaxLength(1024);
+            builder.HasIndex(attempt => new { attempt.RailSubmissionId, attempt.AttemptNumber }).IsUnique();
+            builder.HasIndex(attempt => new { attempt.PaymentId, attempt.StartedAtUtc });
+        });
+
+        modelBuilder.Entity<RailCallbackInbox>(builder =>
+        {
+            builder.ToTable("rail_callback_inbox");
+            builder.HasKey(callback => callback.Id);
+            builder.Property(callback => callback.Provider).HasMaxLength(80).IsRequired();
+            builder.Property(callback => callback.CallbackEventId).HasMaxLength(128).IsRequired();
+            builder.Property(callback => callback.ProviderReference).HasMaxLength(128);
+            builder.Property(callback => callback.ClientReference).HasMaxLength(128);
+            builder.Property(callback => callback.Status).HasConversion<string>().HasMaxLength(40).IsRequired();
+            builder.Property(callback => callback.PayloadHash).HasMaxLength(128).IsRequired();
+            builder.Property(callback => callback.RawPayload).HasColumnType("jsonb").IsRequired();
+            builder.Property(callback => callback.FailureReason).HasMaxLength(512);
+            builder.HasIndex(callback => new { callback.Provider, callback.CallbackEventId }).IsUnique();
+            builder.HasIndex(callback => callback.PaymentId);
+            builder.HasIndex(callback => callback.ProviderReference);
         });
         modelBuilder.Entity<ProcessedIntegrationEvent>(builder =>
         {

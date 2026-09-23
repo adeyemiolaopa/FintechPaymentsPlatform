@@ -1,11 +1,16 @@
+using System.Security.Cryptography;
+using System.Text;
 using Payments.BuildingBlocks.Domain.Primitives;
 
 namespace Payments.Payment.Domain.Payments;
 
 public enum PaymentType { InternalTransfer = 0, ExternalBankTransfer = 1 }
-public enum PaymentStatus { Initiated = 0, PendingValidation = 1, FundsReserved = 2, Processing = 3, SubmittedToRail = 4, PendingReconciliation = 5, Completed = 6, Failed = 7, Rejected = 8, Cancelled = 9 }
+public enum PaymentStatus { Initiated = 0, PendingValidation = 1, FundsReserved = 2, Processing = 3, SubmittedToRail = 4, PendingReconciliation = 5, Completed = 6, Failed = 7, Rejected = 8, Cancelled = 9, ReversalPending = 10, Reversed = 11 }
 public enum PaymentDestinationType { InternalAccount = 0, ExternalBank = 1 }
 public enum PaymentActorType { Customer = 0, Service = 1, SystemWorker = 2, OperationsUser = 3 }
+public enum RailSubmissionStatus { Pending = 0, Submitted = 1, Acknowledged = 2, Ambiguous = 3, Succeeded = 4, Failed = 5 }
+public enum RailSubmissionOutcome { Pending = 0, Succeeded = 1, Failed = 2, Ambiguous = 3 }
+public enum RailCallbackInboxStatus { Received = 0, Processed = 1, Duplicate = 2, Rejected = 3, Unmatched = 4, Conflict = 5 }
 public enum PaymentFailureReasonCode
 {
     None = 0,
@@ -24,7 +29,15 @@ public enum PaymentFailureReasonCode
     SystemFailure = 13,
     ExternalRailNotImplemented = 14,
     CancelledByCustomer = 15,
-    CancelledByOperations = 16
+    CancelledByOperations = 16,
+    ProviderUnavailable = 17,
+    ProviderThrottled = 18,
+    ProviderTimeout = 19,
+    ProviderResponseAmbiguous = 20,
+    ProviderDeclined = 21,
+    ProviderCallbackInvalid = 22,
+    ProviderStatusConflict = 23,
+    ExternalLedgerClearingMissing = 24
 }
 
 public sealed record Currency
@@ -159,6 +172,9 @@ public sealed class Payment
     public string ExternalReference { get; private set; } = string.Empty;
     public Guid? FundsReservationId { get; private set; }
     public Guid? LedgerTransactionId { get; private set; }
+    public Guid? ReversalLedgerTransactionId { get; private set; }
+    public string? ReversalReason { get; private set; }
+    public DateTimeOffset? ReversedAtUtc { get; private set; }
     public PaymentFailureReasonCode? ReasonCode { get; private set; }
     public string? ReasonDescription { get; private set; }
     public int Version { get; private set; }
@@ -177,12 +193,46 @@ public sealed class Payment
 
     public void StartProcessing(DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId) => TransitionTo(PaymentStatus.Processing, null, "Processing started", now, actorType, actorId, correlationId);
 
+    public void MarkSubmittedToRail(DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
+        => TransitionTo(PaymentStatus.SubmittedToRail, null, "Submitted to external rail", now, actorType, actorId, correlationId);
+
+    public void MarkPendingReconciliation(PaymentFailureReasonCode? reasonCode, string reasonDescription, DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
+    {
+        ReasonCode = reasonCode;
+        ReasonDescription = reasonDescription;
+        TransitionTo(PaymentStatus.PendingReconciliation, reasonCode, reasonDescription, now, actorType, actorId, correlationId);
+    }
+
     public void MarkCompleted(Guid ledgerTransactionId, DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
     {
         if (ledgerTransactionId == Guid.Empty) throw new DomainException("payment.ledger", "Ledger transaction id is required before completion.");
         LedgerTransactionId = ledgerTransactionId;
         CompletedAtUtc = now;
         TransitionTo(PaymentStatus.Completed, null, "Payment completed", now, actorType, actorId, correlationId);
+    }
+
+    public void StartReversal(string reason, DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
+    {
+        if (Status == PaymentStatus.Reversed)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            throw new DomainException("payment.reversal_reason", "Reversal reason is required.");
+        }
+
+        ReversalReason = reason.Trim();
+        TransitionTo(PaymentStatus.ReversalPending, null, "Payment reversal started", now, actorType, actorId, correlationId);
+    }
+
+    public void MarkReversed(Guid reversalLedgerTransactionId, DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
+    {
+        if (reversalLedgerTransactionId == Guid.Empty) throw new DomainException("payment.reversal_ledger", "Reversal ledger transaction id is required.");
+        ReversalLedgerTransactionId = reversalLedgerTransactionId;
+        ReversedAtUtc = now;
+        TransitionTo(PaymentStatus.Reversed, null, "Payment reversed", now, actorType, actorId, correlationId);
     }
 
     public void MarkRejected(PaymentFailureReasonCode reasonCode, string reasonDescription, DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
@@ -207,7 +257,7 @@ public sealed class Payment
         TransitionTo(PaymentStatus.Cancelled, reasonCode, reasonDescription, now, actorType, actorId, correlationId);
     }
 
-    public bool IsRecoverable => Status is PaymentStatus.PendingValidation or PaymentStatus.FundsReserved or PaymentStatus.Processing;
+    public bool IsRecoverable => Status is PaymentStatus.PendingValidation or PaymentStatus.FundsReserved or PaymentStatus.Processing or PaymentStatus.SubmittedToRail or PaymentStatus.PendingReconciliation or PaymentStatus.ReversalPending;
 
     private void TransitionTo(PaymentStatus toStatus, PaymentFailureReasonCode? reasonCode, string? reasonDescription, DateTimeOffset now, PaymentActorType actorType, string actorId, string correlationId)
     {
@@ -239,12 +289,244 @@ public sealed class Payment
         (PaymentStatus.Processing, PaymentStatus.Completed) => true,
         (PaymentStatus.Processing, PaymentStatus.Failed) => true,
         (PaymentStatus.Processing, PaymentStatus.SubmittedToRail) => true,
+        (PaymentStatus.Processing, PaymentStatus.PendingReconciliation) => true,
         (PaymentStatus.SubmittedToRail, PaymentStatus.PendingReconciliation) => true,
+        (PaymentStatus.SubmittedToRail, PaymentStatus.Completed) => true,
+        (PaymentStatus.SubmittedToRail, PaymentStatus.Failed) => true,
         (PaymentStatus.PendingReconciliation, PaymentStatus.Completed) => true,
+        (PaymentStatus.PendingReconciliation, PaymentStatus.Failed) => true,
+        (PaymentStatus.Completed, PaymentStatus.ReversalPending) => true,
+        (PaymentStatus.ReversalPending, PaymentStatus.Reversed) => true,
         _ => false,
     };
 }
 
+
+public sealed class RailSubmission
+{
+    private RailSubmission() { }
+
+    private RailSubmission(Guid paymentId, string provider, string market, string currency, string clientReference, string instructionHash, DateTimeOffset now)
+    {
+        Id = Guid.NewGuid();
+        PaymentId = paymentId;
+        Provider = Normalize(provider, 80);
+        Market = Normalize(market, 16);
+        Currency = global::Payments.Payment.Domain.Payments.Currency.FromCode(currency).Code;
+        ClientReference = Normalize(clientReference, 128);
+        InstructionHash = Normalize(instructionHash, 128);
+        Status = RailSubmissionStatus.Pending;
+        Outcome = RailSubmissionOutcome.Pending;
+        CreatedAtUtc = now;
+        UpdatedAtUtc = now;
+        NextStatusCheckAtUtc = now;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid PaymentId { get; private set; }
+    public string Provider { get; private set; } = string.Empty;
+    public string Market { get; private set; } = string.Empty;
+    public string Currency { get; private set; } = string.Empty;
+    public string ClientReference { get; private set; } = string.Empty;
+    public string? ProviderReference { get; private set; }
+    public string InstructionHash { get; private set; } = string.Empty;
+    public RailSubmissionStatus Status { get; private set; }
+    public RailSubmissionOutcome Outcome { get; private set; }
+    public int AttemptCount { get; private set; }
+    public DateTimeOffset? SubmittedAtUtc { get; private set; }
+    public DateTimeOffset? RespondedAtUtc { get; private set; }
+    public string? ResponseCode { get; private set; }
+    public string? ProviderMessage { get; private set; }
+    public string? FailureCategory { get; private set; }
+    public string? RawStatus { get; private set; }
+    public DateTimeOffset? LastStatusCheckAtUtc { get; private set; }
+    public DateTimeOffset? NextStatusCheckAtUtc { get; private set; }
+    public int StatusCheckCount { get; private set; }
+    public DateTimeOffset CreatedAtUtc { get; private set; }
+    public DateTimeOffset UpdatedAtUtc { get; private set; }
+
+    public static RailSubmission Create(Guid paymentId, string provider, string market, string currency, string clientReference, string instructionHash, DateTimeOffset now)
+        => new(paymentId, provider, market, currency, clientReference, instructionHash, now);
+
+    public int StartAttempt(DateTimeOffset now)
+    {
+        AttemptCount++;
+        Status = RailSubmissionStatus.Submitted;
+        SubmittedAtUtc ??= now;
+        UpdatedAtUtc = now;
+        return AttemptCount;
+    }
+
+    public void RecordOutcome(RailSubmissionOutcome outcome, string? providerReference, string? responseCode, string? providerMessage, string? rawStatus, DateTimeOffset now, TimeSpan? nextStatusDelay = null)
+    {
+        Outcome = outcome;
+        ProviderReference = string.IsNullOrWhiteSpace(providerReference) ? ProviderReference : Normalize(providerReference, 128);
+        ResponseCode = Truncate(responseCode, 64);
+        ProviderMessage = Truncate(providerMessage, 512);
+        RawStatus = Truncate(rawStatus, 80);
+        RespondedAtUtc = now;
+        UpdatedAtUtc = now;
+        Status = outcome switch
+        {
+            RailSubmissionOutcome.Succeeded => RailSubmissionStatus.Succeeded,
+            RailSubmissionOutcome.Failed => RailSubmissionStatus.Failed,
+            RailSubmissionOutcome.Ambiguous => RailSubmissionStatus.Ambiguous,
+            _ => RailSubmissionStatus.Acknowledged,
+        };
+        FailureCategory = outcome switch
+        {
+            RailSubmissionOutcome.Failed => "DefinitiveFailure",
+            RailSubmissionOutcome.Ambiguous => "AmbiguousOutcome",
+            _ => null,
+        };
+        NextStatusCheckAtUtc = outcome is RailSubmissionOutcome.Pending or RailSubmissionOutcome.Ambiguous
+            ? now.Add(nextStatusDelay ?? TimeSpan.FromMinutes(2))
+            : null;
+    }
+
+    public void RecordStatusCheck(DateTimeOffset now, TimeSpan nextStatusDelay)
+    {
+        LastStatusCheckAtUtc = now;
+        StatusCheckCount++;
+        NextStatusCheckAtUtc = now.Add(nextStatusDelay);
+        UpdatedAtUtc = now;
+    }
+
+    private static string Normalize(string value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) throw new DomainException("rail.required", "Rail submission field is required.");
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+    }
+
+    private static string? Truncate(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+    }
+}
+
+public sealed class RailSubmissionAttempt
+{
+    private RailSubmissionAttempt() { }
+
+    private RailSubmissionAttempt(Guid railSubmissionId, Guid paymentId, string provider, int attemptNumber, string clientReference, DateTimeOffset now)
+    {
+        Id = Guid.NewGuid();
+        RailSubmissionId = railSubmissionId;
+        PaymentId = paymentId;
+        Provider = provider;
+        AttemptNumber = attemptNumber;
+        ClientReference = clientReference;
+        Outcome = RailSubmissionOutcome.Pending;
+        Status = RailSubmissionStatus.Submitted;
+        StartedAtUtc = now;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid RailSubmissionId { get; private set; }
+    public Guid PaymentId { get; private set; }
+    public string Provider { get; private set; } = string.Empty;
+    public int AttemptNumber { get; private set; }
+    public string ClientReference { get; private set; } = string.Empty;
+    public string? ProviderReference { get; private set; }
+    public RailSubmissionOutcome Outcome { get; private set; }
+    public RailSubmissionStatus Status { get; private set; }
+    public DateTimeOffset StartedAtUtc { get; private set; }
+    public DateTimeOffset? CompletedAtUtc { get; private set; }
+    public string? ResponseCode { get; private set; }
+    public string? ProviderMessage { get; private set; }
+    public string? RawStatus { get; private set; }
+    public string? Error { get; private set; }
+
+    public static RailSubmissionAttempt Create(Guid railSubmissionId, Guid paymentId, string provider, int attemptNumber, string clientReference, DateTimeOffset now)
+        => new(railSubmissionId, paymentId, provider, attemptNumber, clientReference, now);
+
+    public void Complete(RailSubmissionOutcome outcome, string? providerReference, string? responseCode, string? providerMessage, string? rawStatus, string? error, DateTimeOffset now)
+    {
+        Outcome = outcome;
+        Status = outcome switch
+        {
+            RailSubmissionOutcome.Succeeded => RailSubmissionStatus.Succeeded,
+            RailSubmissionOutcome.Failed => RailSubmissionStatus.Failed,
+            RailSubmissionOutcome.Ambiguous => RailSubmissionStatus.Ambiguous,
+            _ => RailSubmissionStatus.Acknowledged,
+        };
+        ProviderReference = providerReference;
+        ResponseCode = responseCode;
+        ProviderMessage = providerMessage;
+        RawStatus = rawStatus;
+        Error = error;
+        CompletedAtUtc = now;
+    }
+}
+
+public sealed class RailCallbackInbox
+{
+    private RailCallbackInbox() { }
+
+    private RailCallbackInbox(string provider, string callbackEventId, string rawPayload, DateTimeOffset now)
+    {
+        Id = Guid.NewGuid();
+        Provider = provider.Trim();
+        CallbackEventId = callbackEventId.Trim();
+        RawPayload = rawPayload;
+        PayloadHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(rawPayload)));
+        Status = RailCallbackInboxStatus.Received;
+        ReceivedAtUtc = now;
+    }
+
+    public Guid Id { get; private set; }
+    public string Provider { get; private set; } = string.Empty;
+    public string CallbackEventId { get; private set; } = string.Empty;
+    public string? ProviderReference { get; private set; }
+    public string? ClientReference { get; private set; }
+    public Guid? PaymentId { get; private set; }
+    public RailCallbackInboxStatus Status { get; private set; }
+    public string PayloadHash { get; private set; } = string.Empty;
+    public string RawPayload { get; private set; } = string.Empty;
+    public DateTimeOffset ReceivedAtUtc { get; private set; }
+    public DateTimeOffset? ProcessedAtUtc { get; private set; }
+    public string? FailureReason { get; private set; }
+
+    public static RailCallbackInbox Receive(string provider, string callbackEventId, string rawPayload, DateTimeOffset now)
+        => new(provider, callbackEventId, rawPayload, now);
+
+    public void AttachReferences(Guid? paymentId, string? providerReference, string? clientReference)
+    {
+        PaymentId = paymentId;
+        ProviderReference = providerReference;
+        ClientReference = clientReference;
+    }
+
+    public void MarkProcessed(DateTimeOffset now)
+    {
+        Status = RailCallbackInboxStatus.Processed;
+        ProcessedAtUtc = now;
+    }
+
+    public void MarkRejected(string reason, DateTimeOffset now)
+    {
+        Status = RailCallbackInboxStatus.Rejected;
+        FailureReason = reason.Length > 512 ? reason[..512] : reason;
+        ProcessedAtUtc = now;
+    }
+
+    public void MarkUnmatched(string reason, DateTimeOffset now)
+    {
+        Status = RailCallbackInboxStatus.Unmatched;
+        FailureReason = reason.Length > 512 ? reason[..512] : reason;
+        ProcessedAtUtc = now;
+    }
+
+    public void MarkConflict(string reason, DateTimeOffset now)
+    {
+        Status = RailCallbackInboxStatus.Conflict;
+        FailureReason = reason.Length > 512 ? reason[..512] : reason;
+        ProcessedAtUtc = now;
+    }
+}
 public sealed class PaymentStateTransition
 {
     private PaymentStateTransition() { }

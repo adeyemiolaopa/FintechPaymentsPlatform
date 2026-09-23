@@ -1,6 +1,8 @@
 using FluentAssertions;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
+using System.Text.Json;
 using Payments.BuildingBlocks.Application.Abstractions;
 using Payments.Payment.Application.Payments;
 using Payments.Payment.Domain.Payments;
@@ -19,6 +21,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     private readonly Guid _accountB = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private readonly Guid _ledgerA = Guid.Parse("33333333-3333-3333-3333-333333333333");
     private readonly Guid _ledgerB = Guid.Parse("44444444-4444-4444-4444-444444444444");
+    private readonly Guid _ledgerClearing = Guid.Parse("55555555-5555-5555-5555-555555555555");
     private TestClock _clock = null!;
     private FakeAccountClient _accountClient = null!;
     private FakeLedgerClient _ledgerClient = null!;
@@ -107,6 +110,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
 
         response.Status.Should().Be("Processing");
         response.FundsReservationId.Should().NotBeNull();
+
         response.LedgerTransactionId.Should().BeNull();
         _accountClient.ActiveReservations.Should().Be(1);
         _accountClient.CommitCount.Should().Be(0);
@@ -115,6 +119,99 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
         var timeline = await service.GetTimelineAsync(response.PaymentId);
         timeline.Select(item => item.ToStatus).Should().ContainInOrder("Initiated", "PendingValidation", "FundsReserved", "Processing");
         timeline.Select(item => item.ToStatus).Should().NotContain("Completed");
+    }
+    [Fact]
+    public async Task External_bank_transfer_provider_success_completes_with_external_clearing_ledger_post()
+    {
+        var rail = new FakeRailAdapter { SubmitResult = new RailSubmissionResult(RailSubmissionOutcome.Succeeded, "RAIL-1", "00", "Successful", _clock.UtcNow, null, "Successful") };
+        var service = CreateService(rail);
+
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "ExternalBankTransfer", 50000m, "NGN", new PaymentDestinationRequest(BankCode: "058", AccountNumber: "0123456789", AccountName: "Ada Lovelace", CountryCode: "NG"), "External payout"));
+
+        response.Status.Should().Be("Completed");
+        response.LedgerTransactionId.Should().NotBeNull();
+        _accountClient.ActiveReservations.Should().Be(0);
+        _accountClient.CommitCount.Should().Be(1);
+        _ledgerClient.Transactions.Should().ContainSingle();
+        _ledgerClient.Transactions.Single().TransactionType.Should().Be("ExternalBankTransfer");
+        _ledgerClient.Transactions.Single().Postings.Should().Contain(item => item.LedgerAccountId == _ledgerA && item.Side == "Debit" && item.Amount == 50000m);
+        _ledgerClient.Transactions.Single().Postings.Should().Contain(item => item.LedgerAccountId == _ledgerClearing && item.Side == "Credit" && item.Amount == 50000m);
+
+        await using var dbContext = CreateDbContext();
+        (await dbContext.RailSubmissions.CountAsync()).Should().Be(1);
+        (await dbContext.RailSubmissionAttempts.CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task External_bank_transfer_definitive_provider_failure_releases_reservation_without_ledger_post()
+    {
+        var rail = new FakeRailAdapter { SubmitResult = new RailSubmissionResult(RailSubmissionOutcome.Failed, "RAIL-FAIL", "51", "Declined", _clock.UtcNow, null, "Failed") };
+        var response = await CreatePaymentAsync(CreateService(rail), new CreatePaymentRequest(_accountA, "ExternalBankTransfer", 50000m, "NGN", new PaymentDestinationRequest(BankCode: "058", AccountNumber: "0123456789", AccountName: "Ada Lovelace", CountryCode: "NG"), "External payout"));
+
+        response.Status.Should().Be("Failed");
+        response.ReasonCode.Should().Be(PaymentFailureReasonCode.ProviderDeclined.ToString());
+        _accountClient.ActiveReservations.Should().Be(0);
+        _ledgerClient.Transactions.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Timeout_after_processing_stays_pending_then_status_recovery_completes_once()
+    {
+        var rail = new FakeRailAdapter
+        {
+            SubmitResult = new RailSubmissionResult(RailSubmissionOutcome.Ambiguous, "RAIL-TIMEOUT", "TIMEOUT", "Timed out after provider may have processed.", _clock.UtcNow, TimeSpan.FromSeconds(1), "Timeout"),
+
+        };
+        var service = CreateService(rail);
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "ExternalBankTransfer", 50000m, "NGN", new PaymentDestinationRequest(BankCode: "058", AccountNumber: "0123456789", AccountName: "Ada Lovelace", CountryCode: "NG"), "External payout"));
+
+        response.Status.Should().Be("PendingReconciliation");
+        rail.StatusResult = new RailStatusResult(RailSubmissionOutcome.Succeeded, "RAIL-TIMEOUT", "00", "Successful", _clock.UtcNow, null, "Successful", null, 50000m, "NGN", response.PaymentId.ToString("D"));
+        response.LedgerTransactionId.Should().BeNull();
+        _accountClient.ActiveReservations.Should().Be(1);
+        _ledgerClient.Transactions.Should().BeEmpty();
+
+        _clock.Advance(TimeSpan.FromSeconds(2));
+        var recovered = await service.RecoverAsync(10, TimeSpan.FromSeconds(1));
+        recovered.Should().Be(1);
+        var completed = await service.GetAsync(response.PaymentId);
+        completed.Status.Should().Be("Completed");
+        _ledgerClient.Transactions.Should().ContainSingle();
+        _accountClient.CommitCount.Should().Be(1);
+        rail.SubmitCount.Should().Be(1);
+        rail.StatusCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Duplicate_success_callbacks_create_one_financial_effect()
+    {
+        var rail = new FakeRailAdapter { SubmitResult = new RailSubmissionResult(RailSubmissionOutcome.Ambiguous, "RAIL-CB", "TIMEOUT", "Timed out", _clock.UtcNow, TimeSpan.FromSeconds(30), "Timeout") };
+        var service = CreateService(rail, new AlwaysValidRailCallbackAuthenticator());
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "ExternalBankTransfer", 50000m, "NGN", new PaymentDestinationRequest(BankCode: "058", AccountNumber: "0123456789", AccountName: "Ada Lovelace", CountryCode: "NG"), "External payout"));
+        response.Status.Should().Be("PendingReconciliation");
+
+        var raw = JsonSerializer.Serialize(new
+        {
+            eventId = "evt-1",
+            providerReference = "RAIL-CB",
+            clientReference = response.PaymentId.ToString("D"),
+            status = "Successful",
+            amount = 50000m,
+            currency = "NGN",
+            responseCode = "00",
+            occurredAtUtc = new DateTimeOffset(2026, 9, 15, 8, 0, 0, TimeSpan.Zero)
+        }, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var headers = new Dictionary<string, string?> { ["X-Rail-Timestamp"] = "1800000000", ["X-Rail-Signature"] = "signature" };
+
+        var first = await service.ProcessCallbackAsync("SimulatorRail", raw, headers);
+        var second = await service.ProcessCallbackAsync("SimulatorRail", raw, headers);
+
+        first.Accepted.Should().BeTrue();
+        second.Duplicate.Should().BeTrue();
+        var completed = await service.GetAsync(response.PaymentId);
+        completed.Status.Should().Be("Completed");
+        _ledgerClient.Transactions.Should().ContainSingle();
+        _accountClient.CommitCount.Should().Be(1);
     }
     [Fact]
     public async Task Ledger_timeout_after_commit_is_recovered_idempotently_without_duplicate_posting()
@@ -249,6 +346,49 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
         (await dbContext.IdempotencyRecords.CountAsync()).Should().Be(1);
     }
     [Fact]
+    public async Task Consistency_checker_reports_zero_violations_for_completed_internal_transfer()
+    {
+        var service = CreateService();
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 15000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Consistency"));
+
+        var consistency = await service.VerifyConsistencyAsync(response.PaymentId);
+
+        consistency.IsConsistent.Should().BeTrue();
+        consistency.Violations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Consistency_checker_detects_uncommitted_reservation_drift()
+    {
+        var service = CreateService();
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 16000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Drift"));
+        _accountClient.ForceReservationStatus(response.FundsReservationId!.Value, "Active");
+
+        var consistency = await service.VerifyConsistencyAsync(response.PaymentId);
+
+        consistency.IsConsistent.Should().BeFalse();
+        consistency.Violations.Should().Contain(item => item.Code == "payment.reservation.not_committed");
+    }
+
+    [Fact]
+    public async Task Completed_internal_transfer_can_be_reversed_once_with_stable_reversal_reference()
+    {
+        var service = CreateService();
+        var response = await CreatePaymentAsync(service, new CreatePaymentRequest(_accountA, "InternalTransfer", 17000m, "NGN", new PaymentDestinationRequest(AccountId: _accountB), "Reverse me"));
+
+        var reversed = await service.ReverseAsync(response.PaymentId, new ReversePaymentRequest("Operations correction"));
+        var duplicate = await service.ReverseAsync(response.PaymentId, new ReversePaymentRequest("Operations correction"));
+        var detail = await service.GetAsync(response.PaymentId);
+
+        reversed.Status.Should().Be("Reversed");
+        duplicate.Status.Should().Be("Reversed");
+        detail.ReversalLedgerTransactionId.Should().NotBeNull();
+        _ledgerClient.ReverseCount.Should().Be(1);
+        var timeline = await service.GetTimelineAsync(response.PaymentId);
+        timeline.Select(item => item.ToStatus).Should().ContainInOrder("ReversalPending", "Reversed");
+    }
+
+    [Fact]
     public async Task Processing_payment_cannot_be_cancelled_without_reversal_semantics()
     {
         _ledgerClient.AlwaysUnavailable = true;
@@ -262,8 +402,8 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
 
     private static async Task<PaymentResponse> CreatePaymentAsync(PaymentService service, CreatePaymentRequest request, string? idempotencyKey = null)
         => (await service.CreateAsync(request, idempotencyKey ?? Guid.NewGuid().ToString("D")).ConfigureAwait(false)).Payment;
-    private PaymentService CreateService()
-        => new(CreateDbContext(), _clock, new TestCurrentUser(_customerA), new TestRequestContext(), _accountClient, _ledgerClient, new CreatePaymentRequestValidator(), new PaymentSearchRequestValidator());
+    private PaymentService CreateService(IPaymentRailAdapter? railAdapter = null, IRailCallbackAuthenticator? callbackAuthenticator = null)
+        => new(CreateDbContext(), _clock, new TestCurrentUser(_customerA), new TestRequestContext(), _accountClient, _ledgerClient, new CreatePaymentRequestValidator(), new PaymentSearchRequestValidator(), null, railAdapter is null ? null : new FakeRailRouter(railAdapter), Options.Create(new ExternalTransferOptions { DefaultClearingLedgerAccountId = _ledgerClearing }), callbackAuthenticator);
 
     private PaymentDbContext CreateDbContext() => new(new DbContextOptionsBuilder<PaymentDbContext>().UseNpgsql(_postgres.GetConnectionString()).Options);
 
@@ -291,7 +431,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
         public string? UserId => "99999999-9999-9999-9999-999999999999";
         public string? CustomerId { get; }
         public IReadOnlyCollection<string> Roles => ["Customer"];
-        public IReadOnlyCollection<string> Permissions => ["payment.create", "payment.read.self", "payment.cancel.self"];
+        public IReadOnlyCollection<string> Permissions => ["payment.create", "payment.read.self", "payment.cancel.self", "payment.reverse", "payment.audit.read"];
         public bool IsAuthenticated => true;
         public bool HasPermission(string permission) => Permissions.Contains(permission, StringComparer.OrdinalIgnoreCase);
     }
@@ -303,6 +443,42 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
         public string TraceId => "trace-payment-tests";
     }
 
+
+    private sealed class FakeRailRouter : IRailRouter
+    {
+        private readonly IPaymentRailAdapter _adapter;
+        public FakeRailRouter(IPaymentRailAdapter adapter) => _adapter = adapter;
+        public Task<RailRoute> RouteAsync(RailTransferInstruction instruction, CancellationToken cancellationToken = default)
+            => Task.FromResult(new RailRoute(_adapter.ProviderName, instruction.DestinationCountryCode, instruction.Currency, PaymentType.ExternalBankTransfer.ToString(), _adapter));
+    }
+
+    private sealed class FakeRailAdapter : IPaymentRailAdapter
+    {
+        public string ProviderName => "SimulatorRail";
+        public RailSubmissionResult SubmitResult { get; set; } = new(RailSubmissionOutcome.Pending, null, "01", "Pending", DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), "Processing");
+        public RailStatusResult StatusResult { get; set; } = new(RailSubmissionOutcome.Pending, null, "01", "Pending", DateTimeOffset.UtcNow, TimeSpan.FromSeconds(1), "Processing");
+        public int SubmitCount { get; private set; }
+        public int StatusCount { get; private set; }
+
+        public Task<RailSubmissionResult> SubmitTransferAsync(RailTransferInstruction instruction, CancellationToken cancellationToken = default)
+        {
+            SubmitCount++;
+            return Task.FromResult(SubmitResult);
+        }
+
+        public Task<RailStatusResult> GetTransferStatusAsync(string clientReference, string? providerReference, CancellationToken cancellationToken = default)
+        {
+            StatusCount++;
+            return Task.FromResult(StatusResult);
+        }
+
+        public Task<bool> ValidateDestinationAsync(PaymentDestinationRequest destination, CancellationToken cancellationToken = default) => Task.FromResult(true);
+    }
+
+    private sealed class AlwaysValidRailCallbackAuthenticator : IRailCallbackAuthenticator
+    {
+        public bool Validate(RailCallbackAuthenticationInput input) => true;
+    }
     private sealed class FakeAccountClient : IAccountServiceClient
     {
         private readonly Lock _gate = new();
@@ -336,6 +512,14 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
             }
         }
 
+        public Task<ReservationClientResponse> GetReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                return Task.FromResult(_reservations.Values.Single(item => item.ReservationId == reservationId && item.AccountId == accountId));
+            }
+        }
+
         public Task<ReservationClientResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
         {
             lock (_gate)
@@ -346,6 +530,15 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
                 var committed = reservation with { Status = "Committed" };
                 _reservations[reservation.ReferenceId] = committed;
                 return Task.FromResult(committed);
+            }
+        }
+
+        public void ForceReservationStatus(Guid reservationId, string status)
+        {
+            lock (_gate)
+            {
+                var reservation = _reservations.Values.Single(item => item.ReservationId == reservationId);
+                _reservations[reservation.ReferenceId] = reservation with { Status = status };
             }
         }
 
@@ -367,6 +560,7 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
     {
         private readonly Lock _gate = new();
         private readonly Dictionary<string, LedgerTransactionClientResponse> _responses = [];
+        private readonly Dictionary<Guid, LedgerTransactionClientResponse> _responsesById = [];
 
         public bool ThrowTransientAfterCommitOnce { get; set; }
         public bool AlwaysUnavailable { get; set; }
@@ -374,6 +568,30 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
         public TaskCompletionSource PostingBlocked { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource AllowPosting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public List<PostLedgerTransactionCommand> Transactions { get; } = [];
+        public int ReverseCount { get; private set; }
+
+        public Task<LedgerTransactionClientResponse> GetTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                return Task.FromResult(_responsesById.TryGetValue(transactionId, out var response) ? response : throw new DownstreamBusinessException(PaymentFailureReasonCode.SystemFailure, "Ledger transaction not found"));
+            }
+        }
+
+        public Task<LedgerTransactionClientResponse> ReverseTransactionAsync(Guid transactionId, ReverseLedgerTransactionCommand command, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                if (_responses.TryGetValue(command.ExternalReference, out var existing)) return Task.FromResult(existing);
+                var original = _responsesById.TryGetValue(transactionId, out var found) ? found : throw new DownstreamBusinessException(PaymentFailureReasonCode.SystemFailure, "Original ledger transaction not found");
+                var postings = (original.Postings ?? []).Select(posting => new LedgerPostingClientResponse(Guid.NewGuid(), posting.LedgerAccountId, posting.Side == "Debit" ? "Credit" : "Debit", posting.Amount, posting.Currency, posting.Sequence, posting.Description, DateTimeOffset.UtcNow)).ToArray();
+                var reversal = new LedgerTransactionClientResponse(Guid.NewGuid(), command.ExternalReference, "Posted", "Reversal", original.Currency, transactionId, command.Reason, postings);
+                ReverseCount++;
+                _responses[command.ExternalReference] = reversal;
+                _responsesById[reversal.TransactionId] = reversal;
+                return Task.FromResult(reversal);
+            }
+        }
 
         public async Task<LedgerTransactionClientResponse> PostTransactionAsync(PostLedgerTransactionCommand command, CancellationToken cancellationToken = default)
         {
@@ -394,8 +612,10 @@ public sealed class PaymentOrchestrationTests : IAsyncLifetime
                 if (_responses.TryGetValue(command.ExternalReference, out var existing)) return existing;
                 if (AlwaysUnavailable) throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Ledger unavailable");
                 Transactions.Add(command);
-                var response = new LedgerTransactionClientResponse(Guid.NewGuid(), command.ExternalReference, "Posted");
+                var postings = command.Postings.Select((posting, index) => new LedgerPostingClientResponse(Guid.NewGuid(), posting.LedgerAccountId, posting.Side, posting.Amount, command.Currency, index + 1, posting.Description, DateTimeOffset.UtcNow)).ToArray();
+                var response = new LedgerTransactionClientResponse(Guid.NewGuid(), command.ExternalReference, "Posted", command.TransactionType, command.Currency, null, null, postings);
                 _responses[command.ExternalReference] = response;
+                _responsesById[response.TransactionId] = response;
                 if (ThrowTransientAfterCommitOnce)
                 {
                     ThrowTransientAfterCommitOnce = false;

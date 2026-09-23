@@ -82,6 +82,12 @@ public sealed class LedgerService : ILedgerService
     public async Task<LedgerTransactionResponse> GetTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default)
         => Map(await LoadTransactionAsync(transactionId, cancellationToken).ConfigureAwait(false));
 
+    public async Task<LedgerTransactionResponse?> GetTransactionByExternalReferenceAsync(string externalReference, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(externalReference) || externalReference.Length > 128) throw new ArgumentException("Invalid ledger external reference.", nameof(externalReference));
+        var record = await _dbContext.IdempotencyRecords.AsNoTracking().SingleOrDefaultAsync(x => x.IdempotencyKey == externalReference, cancellationToken).ConfigureAwait(false);
+        return record is null ? null : Map(await LoadTransactionAsync(record.TransactionId, cancellationToken).ConfigureAwait(false));
+    }
     public async Task<LedgerTransactionResponse> ReverseTransactionAsync(Guid transactionId, ReverseLedgerTransactionRequest request, CancellationToken cancellationToken = default)
     {
         await _reverseValidator.ValidateAndThrowAsync(request, cancellationToken).ConfigureAwait(false);
@@ -89,6 +95,17 @@ public sealed class LedgerService : ILedgerService
         if (original.OriginalTransactionId is not null)
         {
             throw new ConflictException("A reversal transaction cannot be reversed in Week 4; create a controlled adjustment in a future workflow.");
+        }
+
+        if (await _dbContext.IdempotencyRecords.AsNoTracking().SingleOrDefaultAsync(record => record.IdempotencyKey == request.ExternalReference, cancellationToken).ConfigureAwait(false) is { } existingRecord)
+        {
+            var existingTransaction = await LoadTransactionAsync(existingRecord.TransactionId, cancellationToken).ConfigureAwait(false);
+            if (existingTransaction.OriginalTransactionId == transactionId)
+            {
+                return Map(existingTransaction);
+            }
+
+            throw new ConflictException("Reversal idempotency key already exists for a different original transaction.");
         }
 
         if (await _dbContext.Reversals.AnyAsync(reversal => reversal.OriginalTransactionId == transactionId, cancellationToken).ConfigureAwait(false))

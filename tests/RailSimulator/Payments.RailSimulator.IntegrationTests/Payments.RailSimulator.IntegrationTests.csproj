@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Simulators\Payments.RailSimulator.Api\Payments.RailSimulator.Api.csproj" />
+    <ProjectReference Include="..\..\..\src\Simulators\Payments.RailSimulator.Infrastructure\Payments.RailSimulator.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Simulators\Payments.RailSimulator.Application\Payments.RailSimulator.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Simulators\Payments.RailSimulator.Domain\Payments.RailSimulator.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

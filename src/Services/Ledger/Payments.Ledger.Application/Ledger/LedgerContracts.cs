@@ -24,6 +24,7 @@ public interface ILedgerService
     Task<LedgerAccountResponse> GetAccountAsync(Guid ledgerAccountId, CancellationToken cancellationToken = default);
     Task<LedgerTransactionResponse> PostTransactionAsync(PostLedgerTransactionRequest request, CancellationToken cancellationToken = default);
     Task<LedgerTransactionResponse> GetTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default);
+    Task<LedgerTransactionResponse?> GetTransactionByExternalReferenceAsync(string externalReference, CancellationToken cancellationToken = default);
     Task<LedgerTransactionResponse> ReverseTransactionAsync(Guid transactionId, ReverseLedgerTransactionRequest request, CancellationToken cancellationToken = default);
     Task<LedgerBalanceResponse> GetBalanceAsync(Guid ledgerAccountId, DateTimeOffset? asOfUtc, CancellationToken cancellationToken = default);
     Task<LedgerEntryPageResponse> GetEntriesAsync(Guid ledgerAccountId, DateTimeOffset? fromUtc, DateTimeOffset? toUtc, string? side, string? transactionType, string? cursor, int pageSize, CancellationToken cancellationToken = default);

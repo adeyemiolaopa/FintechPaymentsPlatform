@@ -42,10 +42,17 @@ public static class DependencyInjection
         services.AddOptions<PaymentOutboxOptions>().Bind(configuration.GetSection(PaymentOutboxOptions.SectionName));
         services.AddOptions<PaymentRecoveryOptions>().Bind(configuration.GetSection(PaymentRecoveryOptions.SectionName));
         services.AddOptions<PaymentIdempotencyOptions>().Bind(configuration.GetSection(PaymentIdempotencyOptions.SectionName));
+        services.AddOptions<ExternalTransferOptions>().Bind(configuration.GetSection(ExternalTransferOptions.SectionName));
         var database = configuration.GetSection(PaymentDatabaseOptions.SectionName).Get<PaymentDatabaseOptions>() ?? new PaymentDatabaseOptions();
         var downstream = configuration.GetSection(DownstreamServiceOptions.SectionName).Get<DownstreamServiceOptions>() ?? new DownstreamServiceOptions();
         services.AddDbContext<PaymentDbContext>(options => options.UseNpgsql(database.ConnectionString, npgsql => npgsql.EnableRetryOnFailure(3)));
+        services.AddSingleton<RailCircuitBreaker>();
+        services.AddScoped<IRailRouter, ConfiguredRailRouter>();
+        services.AddScoped<IPaymentRailAdapter, SimulatorRailAdapter>();
+        services.AddScoped<IRailCallbackAuthenticator, RailCallbackAuthenticator>();
+        services.AddScoped<IPaymentRailCallbackService, PaymentService>();
         services.AddScoped<IPaymentService, PaymentService>();
+        services.AddHttpClient("rail-simulator");
         services.AddHttpClient<IAccountServiceClient, HttpAccountServiceClient>(client => { client.BaseAddress = new Uri(downstream.AccountBaseUrl); client.Timeout = TimeSpan.FromSeconds(Math.Clamp(downstream.TimeoutSeconds, 1, 30)); });
         services.AddHttpClient<ILedgerServiceClient, HttpLedgerServiceClient>(client => { client.BaseAddress = new Uri(downstream.LedgerBaseUrl); client.Timeout = TimeSpan.FromSeconds(Math.Clamp(downstream.TimeoutSeconds, 1, 30)); });
         services.AddScoped<PaymentReferenceHandler>();

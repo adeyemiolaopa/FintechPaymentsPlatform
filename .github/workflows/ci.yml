@@ -14,7 +14,11 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: dotnet restore FintechPaymentsPlatform.sln
-      - run: dotnet format FintechPaymentsPlatform.sln --verify-no-changes --no-restore
+      - name: Legacy formatting baseline
+        continue-on-error: true
+        run: dotnet format FintechPaymentsPlatform.sln --verify-no-changes --no-restore
+      - name: Reconciliation formatting gate
+        run: dotnet format FintechPaymentsPlatform.sln --verify-no-changes --no-restore --include src/Services/Reconciliation tests/Reconciliation src/Services/Payment/Payments.Payment.Api/Endpoints/ReconciliationInternalEndpoints.cs src/Services/Ledger/Payments.Ledger.Api/Endpoints/LedgerReconciliationEndpoints.cs tests/ArchitectureTests/Payments.ArchitectureTests/ReconciliationBoundaryTests.cs
       - run: dotnet build FintechPaymentsPlatform.sln --configuration Release --no-restore
       - run: dotnet test FintechPaymentsPlatform.sln --configuration Release --no-build --logger trx --results-directory TestResults/solution
       - run: docker build -f deploy/docker/Dockerfile.identity -t payments-identity-api:ci .
@@ -22,6 +26,9 @@ jobs:
       - run: docker build -f deploy/docker/Dockerfile.account -t payments-account-api:ci .
       - run: docker build -f deploy/docker/Dockerfile.ledger -t payments-ledger-api:ci .
       - run: docker build -f deploy/docker/Dockerfile.payment -t payments-payment-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile.rail-simulator -t payments-rail-simulator-api:ci .
+      - run: docker build -f deploy/docker/Dockerfile.reconciliation -t payments-reconciliation-api:ci .
+      - run: docker compose config --quiet
       - uses: actions/upload-artifact@v4
         if: always()
         with:

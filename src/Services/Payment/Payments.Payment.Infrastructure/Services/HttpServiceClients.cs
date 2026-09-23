@@ -19,6 +19,9 @@ public sealed class HttpAccountServiceClient : IAccountServiceClient
     public async Task<ReservationClientResponse> ReserveFundsAsync(Guid accountId, CreateFundsReservationCommand command, CancellationToken cancellationToken = default)
         => await SendAsync<ReservationClientResponse>(() => _httpClient.PostAsJsonAsync($"/api/v1/accounts/{accountId:D}/reservations", command, cancellationToken), PaymentFailureReasonCode.InsufficientFunds, cancellationToken).ConfigureAwait(false);
 
+    public async Task<ReservationClientResponse> GetReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
+        => await SendAsync<ReservationClientResponse>(() => _httpClient.GetAsync($"/api/v1/accounts/{accountId:D}/reservations/{reservationId:D}", cancellationToken), PaymentFailureReasonCode.SystemFailure, cancellationToken).ConfigureAwait(false);
+
     public async Task<ReservationClientResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
         => await SendAsync<ReservationClientResponse>(() => _httpClient.PostAsync($"/api/v1/accounts/{accountId:D}/reservations/{reservationId:D}/commit", null, cancellationToken), PaymentFailureReasonCode.SystemFailure, cancellationToken).ConfigureAwait(false);
 
@@ -59,10 +62,19 @@ public sealed class HttpLedgerServiceClient : ILedgerServiceClient
     public HttpLedgerServiceClient(HttpClient httpClient) => _httpClient = httpClient;
 
     public async Task<LedgerTransactionClientResponse> PostTransactionAsync(PostLedgerTransactionCommand command, CancellationToken cancellationToken = default)
+        => await SendAsync(() => _httpClient.PostAsJsonAsync("/api/v1/ledger/transactions", command, cancellationToken), cancellationToken).ConfigureAwait(false);
+
+    public async Task<LedgerTransactionClientResponse> GetTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default)
+        => await SendAsync(() => _httpClient.GetAsync($"/api/v1/ledger/transactions/{transactionId:D}", cancellationToken), cancellationToken).ConfigureAwait(false);
+
+    public async Task<LedgerTransactionClientResponse> ReverseTransactionAsync(Guid transactionId, ReverseLedgerTransactionCommand command, CancellationToken cancellationToken = default)
+        => await SendAsync(() => _httpClient.PostAsJsonAsync($"/api/v1/ledger/transactions/{transactionId:D}/reverse", command, cancellationToken), cancellationToken).ConfigureAwait(false);
+
+    private static async Task<LedgerTransactionClientResponse> SendAsync(Func<Task<HttpResponseMessage>> send, CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await _httpClient.PostAsJsonAsync("/api/v1/ledger/transactions", command, cancellationToken).ConfigureAwait(false);
+            using var response = await send().ConfigureAwait(false);
             if (response.IsSuccessStatusCode)
             {
                 return await response.Content.ReadFromJsonAsync<LedgerTransactionClientResponse>(cancellationToken).ConfigureAwait(false) ?? throw new DownstreamTransientException(PaymentFailureReasonCode.LedgerServiceUnavailable, "Ledger response was empty.");

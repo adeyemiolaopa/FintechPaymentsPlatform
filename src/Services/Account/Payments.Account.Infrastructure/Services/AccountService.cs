@@ -244,6 +244,13 @@ public sealed class AccountService : IAccountService
         }
     }
 
+    public async Task<ReservationResponse> GetReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
+    {
+        var account = await LoadAuthorizedAccountAsync(accountId, cancellationToken).ConfigureAwait(false);
+        var reservation = await _dbContext.FundsReservations.AsNoTracking().SingleOrDefaultAsync(item => item.Id == reservationId && item.AccountId == account.Id, cancellationToken).ConfigureAwait(false)
+            ?? throw new NotFoundException("FundsReservation", reservationId.ToString("D"));
+        return Map(reservation);
+    }
     public async Task<ReservationResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default)
     {
         var now = _clock.UtcNow;

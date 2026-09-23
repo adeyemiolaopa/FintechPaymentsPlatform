@@ -7,12 +7,15 @@ namespace Payments.Payment.Application.Payments;
 public sealed record CreatePaymentRequest(Guid SourceAccountId, string Type, decimal Amount, string Currency, PaymentDestinationRequest Destination, string? Description = null);
 public sealed record PaymentDestinationRequest(Guid? AccountId = null, string? BankCode = null, string? AccountNumber = null, string? AccountName = null, string? CountryCode = null);
 public sealed record CancelPaymentRequest(string? Reason = null);
+public sealed record ReversePaymentRequest(string Reason);
 public sealed record PaymentResponse(Guid PaymentId, string Reference, string Status, string Type, decimal Amount, string Currency, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, Guid? FundsReservationId, Guid? LedgerTransactionId, string? ReasonCode, string? ReasonDescription);
-public sealed record PaymentDetailResponse(Guid PaymentId, Guid CustomerId, Guid SourceAccountId, string Reference, string Status, string Type, decimal Amount, string Currency, PaymentDestinationResponse Destination, string? Description, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, DateTimeOffset? CompletedAtUtc, DateTimeOffset? FailedAtUtc, Guid? FundsReservationId, Guid? LedgerTransactionId, string? ReasonCode, string? ReasonDescription);
+public sealed record PaymentDetailResponse(Guid PaymentId, Guid CustomerId, Guid SourceAccountId, string Reference, string Status, string Type, decimal Amount, string Currency, PaymentDestinationResponse Destination, string? Description, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, DateTimeOffset? CompletedAtUtc, DateTimeOffset? FailedAtUtc, DateTimeOffset? ReversedAtUtc, Guid? FundsReservationId, Guid? LedgerTransactionId, Guid? ReversalLedgerTransactionId, string? ReversalReason, string? ReasonCode, string? ReasonDescription);
 public sealed record PaymentDestinationResponse(string Type, Guid? AccountId, string? BankCode, string? AccountNumberMasked, string? AccountName, string? CountryCode);
 public sealed record PaymentTimelineEntryResponse(string? FromStatus, string ToStatus, string? ReasonCode, string? ReasonDescription, DateTimeOffset OccurredAtUtc, string ActorType, string ActorId, string CorrelationId);
 public sealed record PaymentPageResponse(IReadOnlyCollection<PaymentResponse> Items, int Page, int PageSize, int TotalCount);
 public sealed record PaymentSearchRequest(string? Status, string? Type, string? Currency, DateTimeOffset? FromUtc, DateTimeOffset? ToUtc, int Page = 1, int PageSize = 50);
+public sealed record PaymentConsistencyViolationResponse(string Code, string Severity, string Message);
+public sealed record PaymentConsistencyResponse(Guid PaymentId, string Status, bool IsConsistent, IReadOnlyCollection<PaymentConsistencyViolationResponse> Violations, DateTimeOffset VerifiedAtUtc);
 
 public interface IPaymentService
 {
@@ -21,10 +24,14 @@ public interface IPaymentService
     Task<IReadOnlyCollection<PaymentTimelineEntryResponse>> GetTimelineAsync(Guid paymentId, CancellationToken cancellationToken = default);
     Task<PaymentPageResponse> ListAsync(PaymentSearchRequest request, CancellationToken cancellationToken = default);
     Task<PaymentResponse> CancelAsync(Guid paymentId, CancelPaymentRequest request, CancellationToken cancellationToken = default);
+    Task<PaymentResponse> ReverseAsync(Guid paymentId, ReversePaymentRequest request, CancellationToken cancellationToken = default);
+    Task<PaymentConsistencyResponse> VerifyConsistencyAsync(Guid paymentId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyCollection<PaymentConsistencyResponse>> VerifyRecentConsistencyAsync(int batchSize, CancellationToken cancellationToken = default);
     Task<int> RecoverAsync(int batchSize, TimeSpan minAge, CancellationToken cancellationToken = default);
+    Task RecoverOneAsync(Guid paymentId, CancellationToken cancellationToken = default);
 }
 
-public sealed record AccountClientResponse(Guid AccountId, Guid CustomerId, string Currency, string AccountType, string Status);
+public sealed record AccountClientResponse(Guid AccountId, Guid CustomerId, string Currency, string AccountType, string Status, bool DebitAllowed = true, bool CreditAllowed = true, Guid? LedgerAccountReference = null);
 public sealed record AccountBalanceClientResponse(Guid AccountId, string Currency, decimal LedgerBalance, decimal ReservedBalance, decimal AvailableBalance, DateTimeOffset AsOfUtc);
 public sealed record ReservationClientResponse(Guid ReservationId, Guid AccountId, string ReferenceId, decimal Amount, string Currency, string Status, DateTimeOffset CreatedAtUtc, DateTimeOffset ExpiresAtUtc);
 public sealed record CreateFundsReservationCommand(string ReferenceId, decimal Amount, string Currency, DateTimeOffset ExpiresAtUtc);
@@ -34,17 +41,22 @@ public interface IAccountServiceClient
     Task<AccountClientResponse> GetAccountAsync(Guid accountId, CancellationToken cancellationToken = default);
     Task<AccountBalanceClientResponse> GetBalanceAsync(Guid accountId, CancellationToken cancellationToken = default);
     Task<ReservationClientResponse> ReserveFundsAsync(Guid accountId, CreateFundsReservationCommand command, CancellationToken cancellationToken = default);
+    Task<ReservationClientResponse> GetReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default);
     Task<ReservationClientResponse> CommitReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default);
     Task<ReservationClientResponse> ReleaseReservationAsync(Guid accountId, Guid reservationId, CancellationToken cancellationToken = default);
 }
 
 public sealed record LedgerPostingCommand(Guid LedgerAccountId, string Side, decimal Amount, string? Description);
-public sealed record LedgerTransactionClientResponse(Guid TransactionId, string ExternalReference, string Status);
+public sealed record LedgerPostingClientResponse(Guid PostingId, Guid LedgerAccountId, string Side, decimal Amount, string Currency, int Sequence, string? Description, DateTimeOffset CreatedAtUtc);
+public sealed record LedgerTransactionClientResponse(Guid TransactionId, string ExternalReference, string Status, string? TransactionType = null, string? Currency = null, Guid? OriginalTransactionId = null, string? ReversalReason = null, IReadOnlyCollection<LedgerPostingClientResponse>? Postings = null);
 public sealed record PostLedgerTransactionCommand(string ExternalReference, string TransactionType, string Currency, string Description, IReadOnlyCollection<LedgerPostingCommand> Postings, DateTimeOffset? OccurredAtUtc = null);
+public sealed record ReverseLedgerTransactionCommand(string ExternalReference, string Reason);
 
 public interface ILedgerServiceClient
 {
     Task<LedgerTransactionClientResponse> PostTransactionAsync(PostLedgerTransactionCommand command, CancellationToken cancellationToken = default);
+    Task<LedgerTransactionClientResponse> GetTransactionAsync(Guid transactionId, CancellationToken cancellationToken = default);
+    Task<LedgerTransactionClientResponse> ReverseTransactionAsync(Guid transactionId, ReverseLedgerTransactionCommand command, CancellationToken cancellationToken = default);
 }
 
 public sealed class DownstreamBusinessException : Exception

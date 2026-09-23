@@ -45,6 +45,9 @@
     <ProjectReference Include="..\..\..\src\Services\Payment\Payments.Payment.Domain\Payments.Payment.Domain.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payment\Payments.Payment.Application\Payments.Payment.Application.csproj" />
     <ProjectReference Include="..\..\..\src\Services\Payment\Payments.Payment.Infrastructure\Payments.Payment.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Reconciliation\Payments.Reconciliation.Domain\Payments.Reconciliation.Domain.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Reconciliation\Payments.Reconciliation.Application\Payments.Reconciliation.Application.csproj" />
+    <ProjectReference Include="..\..\..\src\Services\Reconciliation\Payments.Reconciliation.Infrastructure\Payments.Reconciliation.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

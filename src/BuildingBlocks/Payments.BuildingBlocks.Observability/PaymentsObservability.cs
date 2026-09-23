@@ -42,7 +42,7 @@ public static class ObservabilityServiceCollectionExtensions
             .WithTracing(builder =>
             {
                 builder.SetResourceBuilder(resource)
-                    .AddSource(PaymentsTelemetry.ActivitySourceName)
+                    .AddSource(PaymentsTelemetry.ActivitySourceName, "Payments.Reconciliation")
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation();
 
@@ -56,7 +56,8 @@ public static class ObservabilityServiceCollectionExtensions
                 builder.SetResourceBuilder(resource)
                     .AddAspNetCoreInstrumentation()
                     .AddHttpClientInstrumentation()
-                    .AddRuntimeInstrumentation();
+                    .AddRuntimeInstrumentation()
+                    .AddMeter("Payments.Reconciliation");
 
                 if (options.EnableOtlpExporter)
                 {

@@ -23,6 +23,24 @@ public static class PaymentEndpoints
         payments.MapGet("/{paymentId:guid}", async (Guid paymentId, IPaymentService service, CancellationToken cancellationToken) => Results.Ok(await service.GetAsync(paymentId, cancellationToken).ConfigureAwait(false))).RequireAuthorization("payment.read.self");
         payments.MapGet("/{paymentId:guid}/timeline", async (Guid paymentId, IPaymentService service, CancellationToken cancellationToken) => Results.Ok(await service.GetTimelineAsync(paymentId, cancellationToken).ConfigureAwait(false))).RequireAuthorization("payment.read.self");
         payments.MapPost("/{paymentId:guid}/cancel", async (Guid paymentId, CancelPaymentRequest request, IPaymentService service, CancellationToken cancellationToken) => Results.Ok(await service.CancelAsync(paymentId, request, cancellationToken).ConfigureAwait(false))).RequireAuthorization("payment.cancel.self");
+        payments.MapPost("/{paymentId:guid}/reverse", async (Guid paymentId, ReversePaymentRequest request, IPaymentService service, CancellationToken cancellationToken) => Results.Ok(await service.ReverseAsync(paymentId, request, cancellationToken).ConfigureAwait(false))).RequireAuthorization("payment.reverse");
+        payments.MapPost("/{paymentId:guid}/verify-consistency", async (Guid paymentId, IPaymentService service, CancellationToken cancellationToken) => Results.Ok(await service.VerifyConsistencyAsync(paymentId, cancellationToken).ConfigureAwait(false))).RequireAuthorization("payment.audit.read");
+        payments.MapPost("/verify-consistency", async (int batchSize, IPaymentService service, CancellationToken cancellationToken) => Results.Ok(await service.VerifyRecentConsistencyAsync(batchSize <= 0 ? 25 : batchSize, cancellationToken).ConfigureAwait(false))).RequireAuthorization("payment.audit.read");
+
+        var rails = endpoints.MapGroup("/api/v1/rails").WithTags("Payment Rails");
+        rails.MapPost("/callbacks/{provider}", async (string provider, HttpContext httpContext, IPaymentRailCallbackService service, CancellationToken cancellationToken) =>
+        {
+            using var reader = new StreamReader(httpContext.Request.Body);
+            var rawBody = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+            var headers = httpContext.Request.Headers.ToDictionary(item => item.Key, item => (string?)item.Value.ToString(), StringComparer.OrdinalIgnoreCase);
+            var result = await service.ProcessCallbackAsync(provider, rawBody, headers, cancellationToken).ConfigureAwait(false);
+            if (!result.Accepted)
+            {
+                return Results.Problem(result.Reason ?? "Rail callback was rejected.", statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return Results.Ok(result);
+        });
         return endpoints;
     }
 }

@@ -1,5 +1,7 @@
 using System.Data;
 using System.Diagnostics.Metrics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using FluentValidation;
 using Microsoft.EntityFrameworkCore;
@@ -16,7 +18,7 @@ using DomainException = Payments.BuildingBlocks.Domain.Primitives.DomainExceptio
 
 namespace Payments.Payment.Infrastructure.Services;
 
-public sealed class PaymentService : IPaymentService
+public sealed class PaymentService : IPaymentService, IPaymentRailCallbackService
 {
     private const string PaymentsTopic = "payments.lifecycle.v1";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
@@ -44,8 +46,11 @@ public sealed class PaymentService : IPaymentService
     private readonly IValidator<CreatePaymentRequest> _createValidator;
     private readonly IValidator<PaymentSearchRequest> _searchValidator;
     private readonly PaymentIdempotencyOptions _idempotencyOptions;
+    private readonly IRailRouter? _railRouter;
+    private readonly ExternalTransferOptions _externalTransferOptions;
+    private readonly IRailCallbackAuthenticator? _callbackAuthenticator;
 
-    public PaymentService(PaymentDbContext dbContext, IClock clock, ICurrentUser currentUser, IRequestContext requestContext, IAccountServiceClient accountClient, ILedgerServiceClient ledgerClient, IValidator<CreatePaymentRequest> createValidator, IValidator<PaymentSearchRequest> searchValidator, IOptions<PaymentIdempotencyOptions>? idempotencyOptions = null)
+    public PaymentService(PaymentDbContext dbContext, IClock clock, ICurrentUser currentUser, IRequestContext requestContext, IAccountServiceClient accountClient, ILedgerServiceClient ledgerClient, IValidator<CreatePaymentRequest> createValidator, IValidator<PaymentSearchRequest> searchValidator, IOptions<PaymentIdempotencyOptions>? idempotencyOptions = null, IRailRouter? railRouter = null, IOptions<ExternalTransferOptions>? externalTransferOptions = null, IRailCallbackAuthenticator? callbackAuthenticator = null)
     {
         _dbContext = dbContext;
         _clock = clock;
@@ -56,6 +61,9 @@ public sealed class PaymentService : IPaymentService
         _createValidator = createValidator;
         _searchValidator = searchValidator;
         _idempotencyOptions = idempotencyOptions?.Value ?? new PaymentIdempotencyOptions();
+        _railRouter = railRouter;
+        _externalTransferOptions = externalTransferOptions?.Value ?? new ExternalTransferOptions();
+        _callbackAuthenticator = callbackAuthenticator;
     }
 
     public async Task<PaymentCreationResult> CreateAsync(CreatePaymentRequest request, string idempotencyKey, CancellationToken cancellationToken = default)
@@ -161,11 +169,71 @@ public sealed class PaymentService : IPaymentService
         return Map(payment);
     }
 
+    public async Task<PaymentResponse> ReverseAsync(Guid paymentId, ReversePaymentRequest request, CancellationToken cancellationToken = default)
+    {
+        if (!_currentUser.HasPermission("payment.reverse")) throw new ForbiddenApplicationException();
+        if (string.IsNullOrWhiteSpace(request.Reason)) throw new ConflictException("Reversal reason is required.");
+
+        var payment = await LoadPaymentAsync(paymentId, true, cancellationToken).ConfigureAwait(false);
+        if (payment.Status == PaymentStatus.Reversed) return Map(payment);
+        if (payment.PaymentType != PaymentType.InternalTransfer) throw new ConflictException("Only completed internal transfers can be reversed in Week 9.");
+        if (payment.Status is not PaymentStatus.Completed and not PaymentStatus.ReversalPending) throw new ConflictException("Only completed payments can be reversed.");
+        if (payment.LedgerTransactionId is null) throw new ConflictException("Payment cannot be reversed without an original ledger transaction.");
+
+        var actorType = ResolveActorType(true);
+        var actorId = ActorId(true);
+        if (payment.Status == PaymentStatus.Completed)
+        {
+            var destinationAccountId = payment.Destination.AccountId ?? throw new ConflictException("Internal transfer destination is missing.");
+            var destinationBalance = await _accountClient.GetBalanceAsync(destinationAccountId, cancellationToken).ConfigureAwait(false);
+            if (destinationBalance.AvailableBalance < payment.Amount)
+            {
+                throw new ConflictException("Destination account does not have sufficient available funds for conservative reversal.");
+            }
+
+            var now = _clock.UtcNow;
+            payment.StartReversal(request.Reason, now, actorType, actorId, _requestContext.CorrelationId);
+            AddLatestTransition(payment);
+            AddAudit(payment, "PaymentReversalStarted", now, request.Reason);
+            AddLifecycleOutbox(payment, now);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        await ResumeReversalAsync(payment.Id, actorType, actorId, cancellationToken).ConfigureAwait(false);
+        return Map(await LoadPaymentAsync(payment.Id, false, cancellationToken).ConfigureAwait(false));
+    }
+
+    public async Task<PaymentConsistencyResponse> VerifyConsistencyAsync(Guid paymentId, CancellationToken cancellationToken = default)
+    {
+        var payment = await LoadPaymentAsync(paymentId, false, cancellationToken).ConfigureAwait(false);
+        EnsureCanRead(payment);
+        return await BuildConsistencyResponseAsync(payment, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyCollection<PaymentConsistencyResponse>> VerifyRecentConsistencyAsync(int batchSize, CancellationToken cancellationToken = default)
+    {
+        var take = Math.Clamp(batchSize <= 0 ? 25 : batchSize, 1, 100);
+        var query = _dbContext.Payments.AsNoTracking().Where(payment => payment.PaymentType == PaymentType.InternalTransfer).OrderByDescending(payment => payment.UpdatedAtUtc).Take(take);
+        if (!_currentUser.HasPermission("payment.audit.read") && !_currentUser.HasPermission("payment.read.any"))
+        {
+            var customerId = RequireCustomerId();
+            query = query.Where(payment => payment.CustomerId == customerId);
+        }
+
+        var payments = await query.ToListAsync(cancellationToken).ConfigureAwait(false);
+        var responses = new List<PaymentConsistencyResponse>(payments.Count);
+        foreach (var payment in payments)
+        {
+            responses.Add(await BuildConsistencyResponseAsync(payment, cancellationToken).ConfigureAwait(false));
+        }
+
+        return responses;
+    }
     public async Task<int> RecoverAsync(int batchSize, TimeSpan minAge, CancellationToken cancellationToken = default)
     {
         var take = Math.Clamp(batchSize <= 0 ? 25 : batchSize, 1, 100);
         var cutoff = _clock.UtcNow.Subtract(minAge <= TimeSpan.Zero ? TimeSpan.FromSeconds(30) : minAge);
-        var payments = await _dbContext.Payments.FromSqlInterpolated($"SELECT * FROM payment.payments WHERE \"Status\" IN ('PendingValidation','FundsReserved','Processing') AND \"UpdatedAtUtc\" <= {cutoff} ORDER BY \"UpdatedAtUtc\" LIMIT {take} FOR UPDATE SKIP LOCKED").ToListAsync(cancellationToken).ConfigureAwait(false);
+        var payments = await _dbContext.Payments.FromSqlInterpolated($"SELECT * FROM payment.payments WHERE \"Status\" IN ('PendingValidation','FundsReserved','Processing','SubmittedToRail','PendingReconciliation','ReversalPending') AND \"UpdatedAtUtc\" <= {cutoff} ORDER BY \"UpdatedAtUtc\" LIMIT {take} FOR UPDATE SKIP LOCKED").ToListAsync(cancellationToken).ConfigureAwait(false);
         var processed = 0;
         foreach (var payment in payments)
         {
@@ -185,6 +253,13 @@ public sealed class PaymentService : IPaymentService
         return processed;
     }
 
+    public async Task RecoverOneAsync(Guid paymentId, CancellationToken cancellationToken = default)
+    {
+        var payment = await LoadPaymentAsync(paymentId, true, cancellationToken).ConfigureAwait(false);
+        if (payment.PaymentType != PaymentType.ExternalBankTransfer || payment.Status is not (PaymentStatus.Processing or PaymentStatus.SubmittedToRail or PaymentStatus.PendingReconciliation))
+            return;
+        await ResumePaymentAsync(paymentId, PaymentActorType.SystemWorker, "reconciliation-service", cancellationToken).ConfigureAwait(false);
+    }
     private async Task<IdempotencyClaimResult> TryClaimAndCreatePaymentAsync(Guid customerId, string idempotencyKey, string requestHash, CreatePaymentRequest request, CancellationToken cancellationToken)
     {
         var strategy = _dbContext.Database.CreateExecutionStrategy();
@@ -285,7 +360,7 @@ public sealed class PaymentService : IPaymentService
         await SaveAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static bool IsTerminal(PaymentStatus status) => status is PaymentStatus.Completed or PaymentStatus.Failed or PaymentStatus.Rejected or PaymentStatus.Cancelled;
+    private static bool IsTerminal(PaymentStatus status) => status is PaymentStatus.Completed or PaymentStatus.Failed or PaymentStatus.Rejected or PaymentStatus.Cancelled or PaymentStatus.Reversed;
 
     private static bool IsUniqueViolation(DbUpdateException exception) => exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
 
@@ -302,6 +377,8 @@ public sealed class PaymentService : IPaymentService
                 PaymentStatus.PendingValidation => await ValidateAndReserveAsync(payment, actorType, actorId, cancellationToken).ConfigureAwait(false),
                 PaymentStatus.FundsReserved => await MoveToProcessingAsync(payment, actorType, actorId, cancellationToken).ConfigureAwait(false),
                 PaymentStatus.Processing => await ProcessAsync(payment, actorType, actorId, cancellationToken).ConfigureAwait(false),
+                PaymentStatus.SubmittedToRail or PaymentStatus.PendingReconciliation => await RecoverExternalRailAsync(payment, actorType, actorId, cancellationToken).ConfigureAwait(false),
+                PaymentStatus.ReversalPending => await ResumeReversalAsync(payment.Id, actorType, actorId, cancellationToken).ConfigureAwait(false),
                 _ => false,
             };
         }
@@ -318,6 +395,118 @@ public sealed class PaymentService : IPaymentService
         return true;
     }
 
+    private async Task<bool> ResumeReversalAsync(Guid paymentId, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
+    {
+        var payment = await LoadPaymentAsync(paymentId, true, cancellationToken).ConfigureAwait(false);
+        if (payment.Status == PaymentStatus.Reversed) return false;
+        if (payment.Status != PaymentStatus.ReversalPending) return false;
+        if (payment.LedgerTransactionId is null) throw new ConflictException("Payment cannot be reversed without an original ledger transaction.");
+
+        try
+        {
+            var reason = payment.ReversalReason ?? "Internal transfer reversal";
+            var ledger = await _ledgerClient.ReverseTransactionAsync(payment.LedgerTransactionId.Value, new ReverseLedgerTransactionCommand($"REV-{payment.Id:D}", reason), cancellationToken).ConfigureAwait(false);
+            var now = _clock.UtcNow;
+            payment.MarkReversed(ledger.TransactionId, now, actorType, actorId, _requestContext.CorrelationId);
+            AddLatestTransition(payment);
+            AddAudit(payment, "PaymentReversed", now, reason, JsonSerializer.Serialize(new { ledger.TransactionId }, SerializerOptions));
+            AddLifecycleOutbox(payment, now);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+        catch (DownstreamTransientException exception)
+        {
+            AddAudit(payment, "PaymentReversalDeferred", _clock.UtcNow, exception.Message);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+    }
+
+    private async Task<PaymentConsistencyResponse> BuildConsistencyResponseAsync(Domain.Payments.Payment payment, CancellationToken cancellationToken)
+    {
+        var violations = new List<PaymentConsistencyViolationResponse>();
+        LedgerTransactionClientResponse? ledger = null;
+        ReservationClientResponse? reservation = null;
+
+        if (payment.Status is PaymentStatus.Completed or PaymentStatus.Reversed)
+        {
+            if (payment.LedgerTransactionId is null)
+            {
+                violations.Add(new PaymentConsistencyViolationResponse("payment.completed.ledger_missing", "Critical", "Completed internal payment has no ledger transaction id."));
+            }
+            else
+            {
+                try
+                {
+                    ledger = await _ledgerClient.GetTransactionAsync(payment.LedgerTransactionId.Value, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is DownstreamBusinessException or DownstreamTransientException)
+                {
+                    violations.Add(new PaymentConsistencyViolationResponse("payment.ledger.lookup_failed", "Critical", exception.Message));
+                }
+            }
+
+            if (payment.FundsReservationId is null)
+            {
+                violations.Add(new PaymentConsistencyViolationResponse("payment.completed.reservation_missing", "Critical", "Completed internal payment has no source reservation id."));
+            }
+            else
+            {
+                try
+                {
+                    reservation = await _accountClient.GetReservationAsync(payment.SourceAccountId, payment.FundsReservationId.Value, cancellationToken).ConfigureAwait(false);
+                    if (!string.Equals(reservation.Status, "Committed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        violations.Add(new PaymentConsistencyViolationResponse("payment.reservation.not_committed", "Critical", $"Reservation is {reservation.Status}, expected Committed."));
+                    }
+                }
+                catch (Exception exception) when (exception is DownstreamBusinessException or DownstreamTransientException)
+                {
+                    violations.Add(new PaymentConsistencyViolationResponse("payment.reservation.lookup_failed", "Critical", exception.Message));
+                }
+            }
+        }
+
+        if ((payment.Status is PaymentStatus.Rejected or PaymentStatus.Failed or PaymentStatus.Cancelled) && payment.LedgerTransactionId is not null)
+        {
+            violations.Add(new PaymentConsistencyViolationResponse("payment.terminal.ledger_present", "Critical", "Non-completed terminal payment has a ledger transaction id."));
+        }
+
+        if (ledger is not null)
+        {
+            if (!string.Equals(ledger.ExternalReference, payment.Id.ToString("D"), StringComparison.OrdinalIgnoreCase))
+            {
+                violations.Add(new PaymentConsistencyViolationResponse("payment.ledger.reference_mismatch", "Critical", "Ledger external reference does not match PaymentId."));
+            }
+
+            if (!string.IsNullOrWhiteSpace(ledger.Currency) && !string.Equals(ledger.Currency, payment.Currency.Code, StringComparison.OrdinalIgnoreCase))
+            {
+                violations.Add(new PaymentConsistencyViolationResponse("payment.ledger.currency_mismatch", "Critical", "Ledger currency does not match payment currency."));
+            }
+
+            if (ledger.Postings is { Count: > 0 } postings)
+            {
+                var debit = postings.Where(posting => string.Equals(posting.Side, "Debit", StringComparison.OrdinalIgnoreCase)).Sum(posting => posting.Amount);
+                var credit = postings.Where(posting => string.Equals(posting.Side, "Credit", StringComparison.OrdinalIgnoreCase)).Sum(posting => posting.Amount);
+                if (debit != credit) violations.Add(new PaymentConsistencyViolationResponse("payment.ledger.unbalanced", "Critical", "Ledger debit total does not equal credit total."));
+                if (debit != payment.Amount) violations.Add(new PaymentConsistencyViolationResponse("payment.ledger.amount_mismatch", "Critical", "Ledger transfer amount does not match payment amount."));
+            }
+        }
+
+        if (reservation is not null)
+        {
+            if (reservation.Amount != payment.Amount) violations.Add(new PaymentConsistencyViolationResponse("payment.reservation.amount_mismatch", "Critical", "Reservation amount does not match payment amount."));
+            if (!string.Equals(reservation.Currency, payment.Currency.Code, StringComparison.OrdinalIgnoreCase)) violations.Add(new PaymentConsistencyViolationResponse("payment.reservation.currency_mismatch", "Critical", "Reservation currency does not match payment currency."));
+            if (!string.Equals(reservation.ReferenceId, payment.Id.ToString("D"), StringComparison.OrdinalIgnoreCase)) violations.Add(new PaymentConsistencyViolationResponse("payment.reservation.reference_mismatch", "Critical", "Reservation reference does not match PaymentId."));
+        }
+
+        if (payment.Status == PaymentStatus.Reversed && payment.ReversalLedgerTransactionId is null)
+        {
+            violations.Add(new PaymentConsistencyViolationResponse("payment.reversal.ledger_missing", "Critical", "Reversed payment has no reversal ledger transaction id."));
+        }
+
+        return new PaymentConsistencyResponse(payment.Id, payment.Status.ToString(), violations.Count == 0, violations, _clock.UtcNow);
+    }
     private async Task<bool> ValidateAndReserveAsync(Domain.Payments.Payment payment, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
     {
         var now = _clock.UtcNow;
@@ -369,16 +558,14 @@ public sealed class PaymentService : IPaymentService
         AddAudit(payment, "ProcessingStarted", now);
         AddLifecycleOutbox(payment, now);
         await SaveAsync(cancellationToken).ConfigureAwait(false);
-        return payment.PaymentType == PaymentType.InternalTransfer;
+        return true;
     }
 
     private async Task<bool> ProcessAsync(Domain.Payments.Payment payment, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
     {
         if (payment.PaymentType == PaymentType.ExternalBankTransfer)
         {
-            AddAudit(payment, "ExternalRailDeferred", _clock.UtcNow, "External rail processing is not implemented in Week 5.");
-            await SaveAsync(cancellationToken).ConfigureAwait(false);
-            return false;
+            return await ProcessExternalRailAsync(payment, actorType, actorId, cancellationToken).ConfigureAwait(false);
         }
 
         var now = _clock.UtcNow;
@@ -422,6 +609,168 @@ public sealed class PaymentService : IPaymentService
         }
     }
 
+    private async Task<bool> ProcessExternalRailAsync(Domain.Payments.Payment payment, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
+    {
+        if (_railRouter is null)
+        {
+            AddAudit(payment, "ExternalRailDeferred", _clock.UtcNow, "Rail router is not configured.");
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        var instruction = CreateRailInstruction(payment);
+        var route = await _railRouter.RouteAsync(instruction, cancellationToken).ConfigureAwait(false);
+        var now = _clock.UtcNow;
+        var instructionHash = ComputeRailInstructionHash(instruction, route.ProviderName);
+        var submission = await _dbContext.RailSubmissions.SingleOrDefaultAsync(item => item.PaymentId == payment.Id, cancellationToken).ConfigureAwait(false);
+        if (submission is null)
+        {
+            submission = RailSubmission.Create(payment.Id, route.ProviderName, route.Market, payment.Currency.Code, instruction.ClientReference, instructionHash, now);
+            _dbContext.RailSubmissions.Add(submission);
+        }
+        else if (!string.Equals(submission.InstructionHash, instructionHash, StringComparison.Ordinal))
+        {
+            payment.MarkPendingReconciliation(PaymentFailureReasonCode.ProviderResponseAmbiguous, "Rail instruction hash mismatch requires manual investigation.", now, actorType, actorId, _requestContext.CorrelationId);
+            AddLatestTransition(payment);
+            AddAudit(payment, "RailInstructionHashMismatch", now, "Existing rail submission hash differs from current payment instruction.");
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        if (payment.Status == PaymentStatus.Processing)
+        {
+            payment.MarkSubmittedToRail(now, actorType, actorId, _requestContext.CorrelationId);
+            AddLatestTransition(payment);
+            AddLifecycleOutbox(payment, now);
+        }
+
+        AddAudit(payment, "RailSubmissionPrepared", now, null, JsonSerializer.Serialize(new { route.ProviderName, route.Market, instruction.ClientReference }, SerializerOptions));
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+
+        payment = await LoadPaymentAsync(payment.Id, true, cancellationToken).ConfigureAwait(false);
+        submission = await _dbContext.RailSubmissions.SingleAsync(item => item.PaymentId == payment.Id, cancellationToken).ConfigureAwait(false);
+        var attemptNumber = submission.StartAttempt(_clock.UtcNow);
+        var attempt = RailSubmissionAttempt.Create(submission.Id, payment.Id, submission.Provider, attemptNumber, submission.ClientReference, _clock.UtcNow);
+        _dbContext.RailSubmissionAttempts.Add(attempt);
+        AddAudit(payment, "RailSubmissionAttemptStarted", _clock.UtcNow, null, JsonSerializer.Serialize(new { attemptNumber, submission.Provider, submission.ClientReference }, SerializerOptions));
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+
+        var result = await route.Adapter.SubmitTransferAsync(instruction, cancellationToken).ConfigureAwait(false);
+        payment = await LoadPaymentAsync(payment.Id, true, cancellationToken).ConfigureAwait(false);
+        submission = await _dbContext.RailSubmissions.SingleAsync(item => item.PaymentId == payment.Id, cancellationToken).ConfigureAwait(false);
+        attempt = await _dbContext.RailSubmissionAttempts.SingleAsync(item => item.RailSubmissionId == submission.Id && item.AttemptNumber == attemptNumber, cancellationToken).ConfigureAwait(false);
+        var respondedAt = _clock.UtcNow;
+        submission.RecordOutcome(result.Outcome, result.ProviderReference, result.ProviderResponseCode, result.ProviderMessage, result.RawStatus, respondedAt, result.RetryAfter);
+        attempt.Complete(result.Outcome, result.ProviderReference, result.ProviderResponseCode, result.ProviderMessage, result.RawStatus, result.Error, respondedAt);
+        AddAudit(payment, "RailSubmissionResultClassified", respondedAt, result.ProviderMessage, JsonSerializer.Serialize(new { result.Outcome, result.ProviderReference, result.ProviderResponseCode, result.RawStatus }, SerializerOptions));
+
+        return result.Outcome switch
+        {
+            RailSubmissionOutcome.Succeeded => await CompleteExternalProviderSuccessAsync(payment, submission, actorType, actorId, cancellationToken).ConfigureAwait(false),
+            RailSubmissionOutcome.Failed => await FailExternalProviderFailureAsync(payment, result.ProviderMessage ?? "External provider returned a definitive failure.", actorType, actorId, cancellationToken).ConfigureAwait(false),
+            RailSubmissionOutcome.Pending => await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.ProviderResponseAmbiguous, result.ProviderMessage ?? "External provider outcome is pending.", actorType, actorId, cancellationToken).ConfigureAwait(false),
+            RailSubmissionOutcome.Ambiguous => await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.ProviderResponseAmbiguous, result.ProviderMessage ?? "External provider outcome is ambiguous.", actorType, actorId, cancellationToken).ConfigureAwait(false),
+            _ => false,
+        };
+    }
+
+    private async Task<bool> RecoverExternalRailAsync(Domain.Payments.Payment payment, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
+    {
+        if (_railRouter is null) return false;
+        var submission = await _dbContext.RailSubmissions.SingleOrDefaultAsync(item => item.PaymentId == payment.Id, cancellationToken).ConfigureAwait(false);
+        if (submission is null) return await ProcessExternalRailAsync(payment, actorType, actorId, cancellationToken).ConfigureAwait(false);
+        if (submission.NextStatusCheckAtUtc is { } next && next > _clock.UtcNow) return false;
+
+        var instruction = CreateRailInstruction(payment);
+        var route = await _railRouter.RouteAsync(instruction, cancellationToken).ConfigureAwait(false);
+        var status = await route.Adapter.GetTransferStatusAsync(submission.ClientReference, submission.ProviderReference, cancellationToken).ConfigureAwait(false);
+        var now = _clock.UtcNow;
+        if ((status.Outcome is RailSubmissionOutcome.Succeeded or RailSubmissionOutcome.Failed) &&
+            (status.ProviderAmount != payment.Amount || !string.Equals(status.ProviderCurrency, payment.Currency.Code, StringComparison.OrdinalIgnoreCase) || !string.Equals(status.ProviderClientReference, submission.ClientReference, StringComparison.Ordinal)))
+        {
+            AddAudit(payment, "RailStatusEvidenceMismatch", _clock.UtcNow, "Provider status financial evidence conflicts with payment.");
+            return await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.ProviderStatusConflict, "Provider status evidence requires manual investigation.", actorType, actorId, cancellationToken).ConfigureAwait(false);
+        }
+        submission.RecordStatusCheck(now, status.RetryAfter ?? TimeSpan.FromSeconds(_externalTransferOptions.PendingStatusBackoffSeconds));
+        submission.RecordOutcome(status.Outcome, status.ProviderReference, status.ProviderResponseCode, status.ProviderMessage, status.RawStatus, now, status.RetryAfter);
+        AddAudit(payment, "RailStatusChecked", now, status.ProviderMessage, JsonSerializer.Serialize(new { status.Outcome, status.ProviderReference, status.ProviderResponseCode, status.RawStatus }, SerializerOptions));
+
+        return status.Outcome switch
+        {
+            RailSubmissionOutcome.Succeeded => await CompleteExternalProviderSuccessAsync(payment, submission, actorType, actorId, cancellationToken).ConfigureAwait(false),
+            RailSubmissionOutcome.Failed => await FailExternalProviderFailureAsync(payment, status.ProviderMessage ?? "External provider returned a definitive failure.", actorType, actorId, cancellationToken).ConfigureAwait(false),
+            _ => await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.ProviderResponseAmbiguous, status.ProviderMessage ?? "External provider outcome is still unresolved.", actorType, actorId, cancellationToken).ConfigureAwait(false),
+        };
+    }
+
+    private async Task<bool> CompleteExternalProviderSuccessAsync(Domain.Payments.Payment payment, RailSubmission submission, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
+    {
+        if (payment.Status == PaymentStatus.Completed) return false;
+        var source = await _dbContext.AccountReferences.AsNoTracking().SingleAsync(reference => reference.AccountId == payment.SourceAccountId, cancellationToken).ConfigureAwait(false);
+        if (source.LedgerAccountId is null || _externalTransferOptions.DefaultClearingLedgerAccountId == Guid.Empty)
+        {
+            return await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.ExternalLedgerClearingMissing, "External transfer clearing ledger account is not configured.", actorType, actorId, cancellationToken).ConfigureAwait(false);
+        }
+
+        try
+        {
+            var now = _clock.UtcNow;
+            var ledger = await _ledgerClient.PostTransactionAsync(new PostLedgerTransactionCommand(payment.Id.ToString("D"), "ExternalBankTransfer", payment.Currency.Code, $"External transfer {payment.Reference}", [new LedgerPostingCommand(source.LedgerAccountId.Value, "Debit", payment.Amount, $"Debit external transfer {payment.Reference}"), new LedgerPostingCommand(_externalTransferOptions.DefaultClearingLedgerAccountId, "Credit", payment.Amount, $"Credit external clearing {submission.Provider}")], now), cancellationToken).ConfigureAwait(false);
+            AddAudit(payment, "ExternalLedgerPostingConfirmed", _clock.UtcNow, null, JsonSerializer.Serialize(new { ledger.TransactionId, submission.Provider, submission.ProviderReference }, SerializerOptions));
+            if (payment.FundsReservationId is { } reservationId)
+            {
+                await _accountClient.CommitReservationAsync(payment.SourceAccountId, reservationId, cancellationToken).ConfigureAwait(false);
+                AddAudit(payment, "ReservationCommitted", _clock.UtcNow, null, JsonSerializer.Serialize(new { reservationId }, SerializerOptions));
+            }
+
+            payment.MarkCompleted(ledger.TransactionId, _clock.UtcNow, actorType, actorId, _requestContext.CorrelationId);
+            AddLatestTransition(payment);
+            AddAudit(payment, "PaymentCompleted", _clock.UtcNow, "External provider success finalized.");
+            AddLifecycleOutbox(payment, _clock.UtcNow);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            PaymentsCompleted.Add(1, new KeyValuePair<string, object?>("payment_type", payment.PaymentType.ToString()), new KeyValuePair<string, object?>("currency", payment.Currency.Code));
+            return false;
+        }
+        catch (DownstreamTransientException exception)
+        {
+            return await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.LedgerServiceUnavailable, exception.Message, actorType, actorId, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<bool> FailExternalProviderFailureAsync(Domain.Payments.Payment payment, string description, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
+    {
+        if (payment.Status == PaymentStatus.Completed)
+        {
+            AddAudit(payment, "RailFailureAfterCompletionIgnored", _clock.UtcNow, description);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return false;
+        }
+
+        return await FailAfterReservationAsync(payment, PaymentFailureReasonCode.ProviderDeclined, description, actorType, actorId, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<bool> MarkExternalPendingAsync(Domain.Payments.Payment payment, PaymentFailureReasonCode reasonCode, string description, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
+    {
+        if (payment.Status is PaymentStatus.Processing or PaymentStatus.SubmittedToRail)
+        {
+            payment.MarkPendingReconciliation(reasonCode, description, _clock.UtcNow, actorType, actorId, _requestContext.CorrelationId);
+            AddLatestTransition(payment);
+            AddLifecycleOutbox(payment, _clock.UtcNow);
+        }
+
+        AddAudit(payment, "ExternalTransferPendingReconciliation", _clock.UtcNow, description);
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+        return false;
+    }
+
+    private RailTransferInstruction CreateRailInstruction(Domain.Payments.Payment payment)
+        => new(payment.Id, payment.Id.ToString("D"), payment.SourceAccountId.ToString("D"), payment.Destination.BankCode ?? string.Empty, payment.Destination.AccountNumber ?? string.Empty, payment.Destination.AccountName ?? string.Empty, payment.Destination.CountryCode ?? string.Empty, payment.Amount, payment.Currency.Code, payment.Description);
+
+    private static string ComputeRailInstructionHash(RailTransferInstruction instruction, string provider)
+    {
+        var canonical = JsonSerializer.Serialize(new { provider, instruction.ClientReference, instruction.DestinationBankCode, instruction.DestinationAccountNumber, instruction.DestinationAccountName, instruction.DestinationCountryCode, instruction.Amount, instruction.Currency }, SerializerOptions);
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
     private async Task<bool> FailAfterReservationAsync(Domain.Payments.Payment payment, PaymentFailureReasonCode reasonCode, string description, PaymentActorType actorType, string actorId, CancellationToken cancellationToken)
     {
         var now = _clock.UtcNow;
@@ -503,6 +852,119 @@ public sealed class PaymentService : IPaymentService
         return null;
     }
 
+    public async Task<RailCallbackProcessResult> ProcessCallbackAsync(string provider, string rawBody, IReadOnlyDictionary<string, string?> headers, CancellationToken cancellationToken = default)
+    {
+        if (_callbackAuthenticator is null)
+        {
+            return new RailCallbackProcessResult(false, false, "Rejected", "Callback authenticator is not configured.");
+        }
+
+        headers.TryGetValue("X-Rail-Timestamp", out var timestamp);
+        headers.TryGetValue("X-Rail-Signature", out var signature);
+        if (!_callbackAuthenticator.Validate(new RailCallbackAuthenticationInput(provider, timestamp, signature, rawBody)))
+        {
+            return new RailCallbackProcessResult(false, false, "Rejected", "Invalid callback signature.");
+        }
+
+        RailCallbackPayload payload;
+        try
+        {
+            payload = JsonSerializer.Deserialize<RailCallbackPayload>(rawBody, SerializerOptions) ?? throw new JsonException("Callback body was empty.");
+        }
+        catch (JsonException exception)
+        {
+            return new RailCallbackProcessResult(false, false, "Rejected", exception.Message);
+        }
+
+        var now = _clock.UtcNow;
+        var existing = await _dbContext.RailCallbackInboxes.AsNoTracking().SingleOrDefaultAsync(item => item.Provider == provider && item.CallbackEventId == payload.EventId, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return new RailCallbackProcessResult(true, true, existing.Status.ToString(), "Duplicate callback ignored.");
+        }
+
+        var inbox = RailCallbackInbox.Receive(provider, payload.EventId, rawBody, now);
+        _dbContext.RailCallbackInboxes.Add(inbox);
+
+        if (!Guid.TryParse(payload.ClientReference, out var paymentId))
+        {
+            inbox.AttachReferences(null, payload.ProviderReference, payload.ClientReference);
+            inbox.MarkUnmatched("Callback client reference is not a payment id.", now);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), inbox.FailureReason);
+        }
+
+        var payment = await _dbContext.Payments.SingleOrDefaultAsync(item => item.Id == paymentId, cancellationToken).ConfigureAwait(false);
+        if (payment is null)
+        {
+            inbox.AttachReferences(null, payload.ProviderReference, payload.ClientReference);
+            inbox.MarkUnmatched("Callback references an unknown payment.", now);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), inbox.FailureReason);
+        }
+
+        inbox.AttachReferences(payment.Id, payload.ProviderReference, payload.ClientReference);
+        var submission = await _dbContext.RailSubmissions.SingleOrDefaultAsync(item => item.PaymentId == payment.Id, cancellationToken).ConfigureAwait(false);
+        if (submission is null)
+        {
+            inbox.MarkUnmatched("Callback arrived before a rail submission record was available.", now);
+            AddAudit(payment, "RailCallbackUnmatched", now, inbox.FailureReason);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), inbox.FailureReason);
+        }
+
+        if (!string.IsNullOrWhiteSpace(submission.ProviderReference) && !string.Equals(submission.ProviderReference, payload.ProviderReference, StringComparison.OrdinalIgnoreCase))
+        {
+            inbox.MarkConflict("Callback provider reference does not match stored submission.", now);
+            AddAudit(payment, "RailCallbackConflict", now, inbox.FailureReason);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), inbox.FailureReason);
+        }
+
+        if (payload.Amount != payment.Amount || !string.Equals(payload.Currency, payment.Currency.Code, StringComparison.OrdinalIgnoreCase))
+        {
+            inbox.MarkConflict("Callback amount or currency does not match payment.", now);
+            AddAudit(payment, "RailCallbackIntegrityViolation", now, inbox.FailureReason);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), inbox.FailureReason);
+        }
+
+        var outcome = payload.Status switch
+        {
+            "Successful" => RailSubmissionOutcome.Succeeded,
+            "Failed" => RailSubmissionOutcome.Failed,
+            "Processing" or "Received" => RailSubmissionOutcome.Pending,
+            _ => RailSubmissionOutcome.Ambiguous,
+        };
+        submission.RecordOutcome(outcome, payload.ProviderReference, payload.ResponseCode, payload.Status, payload.Status, now, TimeSpan.FromSeconds(_externalTransferOptions.PendingStatusBackoffSeconds));
+
+        if (payment.Status == PaymentStatus.Completed && outcome != RailSubmissionOutcome.Succeeded)
+        {
+            inbox.MarkConflict("Callback conflicts with completed payment state.", now);
+            AddAudit(payment, "RailCallbackConflictAfterCompletion", now, inbox.FailureReason);
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), inbox.FailureReason);
+        }
+
+        if (payment.Status is PaymentStatus.Completed or PaymentStatus.Failed or PaymentStatus.Rejected or PaymentStatus.Cancelled or PaymentStatus.Reversed)
+        {
+            inbox.MarkProcessed(now);
+            AddAudit(payment, "RailCallbackStaleIgnored", now, $"Terminal payment ignored callback status {payload.Status}.");
+            await SaveAsync(cancellationToken).ConfigureAwait(false);
+            return new RailCallbackProcessResult(true, false, inbox.Status.ToString(), "Terminal payment state was not changed.");
+        }
+
+        inbox.MarkProcessed(now);
+        var result = outcome switch
+        {
+            RailSubmissionOutcome.Succeeded => await CompleteExternalProviderSuccessAsync(payment, submission, PaymentActorType.SystemWorker, "rail-callback", cancellationToken).ConfigureAwait(false),
+            RailSubmissionOutcome.Failed => await FailExternalProviderFailureAsync(payment, "External provider callback reported definitive failure.", PaymentActorType.SystemWorker, "rail-callback", cancellationToken).ConfigureAwait(false),
+            _ => await MarkExternalPendingAsync(payment, PaymentFailureReasonCode.ProviderResponseAmbiguous, "External provider callback did not provide a final outcome.", PaymentActorType.SystemWorker, "rail-callback", cancellationToken).ConfigureAwait(false),
+        };
+        _ = result;
+        await SaveAsync(cancellationToken).ConfigureAwait(false);
+        return new RailCallbackProcessResult(true, false, inbox.Status.ToString());
+    }
     private static PaymentDestination CreateDestination(PaymentType type, PaymentDestinationRequest request)
         => type == PaymentType.InternalTransfer
             ? PaymentDestination.InternalAccount(request.AccountId ?? Guid.Empty)
@@ -585,7 +1047,7 @@ public sealed class PaymentService : IPaymentService
     private string ActorId(bool privileged) => _currentUser.UserId ?? (privileged ? "operations-user" : "payment-service");
 
     private static PaymentResponse Map(Domain.Payments.Payment payment) => new(payment.Id, payment.Reference, payment.Status.ToString(), payment.PaymentType.ToString(), payment.Amount, payment.Currency.Code, payment.CreatedAtUtc, payment.UpdatedAtUtc, payment.FundsReservationId, payment.LedgerTransactionId, payment.ReasonCode?.ToString(), payment.ReasonDescription);
-    private static PaymentDetailResponse MapDetail(Domain.Payments.Payment payment) => new(payment.Id, payment.CustomerId, payment.SourceAccountId, payment.Reference, payment.Status.ToString(), payment.PaymentType.ToString(), payment.Amount, payment.Currency.Code, MapDestination(payment.Destination), payment.Description, payment.CreatedAtUtc, payment.UpdatedAtUtc, payment.CompletedAtUtc, payment.FailedAtUtc, payment.FundsReservationId, payment.LedgerTransactionId, payment.ReasonCode?.ToString(), payment.ReasonDescription);
+    private static PaymentDetailResponse MapDetail(Domain.Payments.Payment payment) => new(payment.Id, payment.CustomerId, payment.SourceAccountId, payment.Reference, payment.Status.ToString(), payment.PaymentType.ToString(), payment.Amount, payment.Currency.Code, MapDestination(payment.Destination), payment.Description, payment.CreatedAtUtc, payment.UpdatedAtUtc, payment.CompletedAtUtc, payment.FailedAtUtc, payment.ReversedAtUtc, payment.FundsReservationId, payment.LedgerTransactionId, payment.ReversalLedgerTransactionId, payment.ReversalReason, payment.ReasonCode?.ToString(), payment.ReasonDescription);
     private static PaymentDestinationResponse MapDestination(PaymentDestination destination) => new(destination.DestinationType.ToString(), destination.AccountId, destination.BankCode, Mask(destination.AccountNumber), destination.AccountName, destination.CountryCode);
     private static string? Mask(string? accountNumber) => string.IsNullOrWhiteSpace(accountNumber) ? null : accountNumber.Length <= 4 ? "****" : $"******{accountNumber[^4..]}";
 }

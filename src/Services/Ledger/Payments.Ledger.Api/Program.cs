@@ -66,6 +66,7 @@ try
     app.MapHealthChecks("/health/live", new HealthCheckOptions { Predicate = registration => registration.Tags.Contains("live"), ResponseWriter = WriteHealthResponseAsync });
     app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = _ => true, ResponseWriter = WriteHealthResponseAsync });
     app.MapLedgerEndpoints();
+    app.MapLedgerReconciliationEndpoints();
 
     app.Run();
 }

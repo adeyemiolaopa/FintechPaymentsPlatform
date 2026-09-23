@@ -1,0 +1,5 @@
+# Reconciliation alert policy
+
+Alert on any open critical exception, provider-success/ledger-missing exception, low match rate with absolute exception count, rising active-job backlog, and oldest open exception exceeding the operations SLA. Missing settlement-file alerts must use each provider's expected local-business-date delivery schedule and cutoff, including weekends and holidays; absence outside that schedule is not a failed transfer.
+
+Counters/histograms currently emitted include received/rejected files, processed rows, matches, exceptions, runs, auto/manual resolutions, run duration and file-processing duration. Labels are provider, mode, exception code and severity only; never Payment ID or provider reference. Dashboard reads current open/critical counts and active-job count from PostgreSQL. The control monitor exports open-exception age/count and active-backlog gauges and emits structured warnings/critical logs for these conditions. Missing-file checks run only for explicitly configured provider schedules, local timezone, business date and weekend policy. Production alert routing remains an environment responsibility in OpenTelemetry/CloudWatch.
